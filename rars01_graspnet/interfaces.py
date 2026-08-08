@@ -1,0 +1,23 @@
+"""Protocols implemented now by SDK drivers and later by ROS 2 adapters."""
+from __future__ import annotations
+
+from typing import Protocol
+
+from .contracts import Detection2D, RgbdFrame, RobotState
+
+
+class CameraSource(Protocol):
+    def open(self) -> None: ...
+    def read(self) -> RgbdFrame | None: ...
+    def close(self) -> None: ...
+
+
+class RobotStateSource(Protocol):
+    def connect(self) -> None: ...
+    def read_state(self) -> RobotState: ...
+    def close(self) -> None: ...
+
+
+class ObjectDetector(Protocol):
+    def detect(self, frame: RgbdFrame) -> list[Detection2D]: ...
+

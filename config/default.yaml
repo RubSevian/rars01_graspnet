@@ -1,0 +1,144 @@
+camera:
+  # Драйвер RGB-D камеры; Gemini 336 использует orbbec_gemini2.
+  type: orbbec_gemini2
+  # Серийный номер; null выбирает первую найденную камеру.
+  serial: null
+  # Размер RGB кадра, px: влияет на точность маски и нагрузку GPU/USB.
+  color_width: 1280
+  color_height: 720 # Высота RGB кадра, px.
+  fps: 30 # Частота RGB-D кадров, Hz.
+  # auto: совместимый HW D2C, иначе программный AlignFilter.
+  alignment: auto
+
+calibration:
+  aruco:
+    # Реальная сторона распечатанного маркера, м.
+    marker_length_m: 0.1
+    dict_id: 0 # ID словаря ArUco OpenCV.
+    target_marker_id: 0 # ID маркера для калибровки.
+  hand_eye_method: TSAI # Метод hand-eye; менять только при новой калибровке.
+  hand_eye_compensation_m:
+    x: 0.00 # Ручная коррекция X, м.
+    y: 0.0 # Ручная коррекция Y, м.
+    z: 0.0 # Ручная коррекция Z, м.
+
+detection:
+  # Минимальная уверенность YOLO; ниже — больше ложных объектов.
+  conf_threshold: 0.5
+  iou_threshold: 0.45 # IoU порог NMS YOLO.
+
+robot:
+  # Драйвер моторов: rars01 или исходный rebot.
+  backend: rars01
+  rars01:
+    # Каталог собранного Python-модуля RARS SDK.
+    sdk_python_path: ../rars_arm_sdk/build-python
+    # Неизменённая модель RARS01 для исходных IK и Cartesian-траекторий reBot.
+    urdf_path: ../rars01_description/urdf/rars01.urdf
+    end_effector_frame: End_link # TCP кадр URDF для IK и hand-eye.
+    # Последовательный порт и скорость контроллера RARS01.
+    port: /dev/ttyACM0 # USB CDC порт STM32.
+    baud_rate: 921600 # Скорость serial SDK.
+    # Остановить команды, если свежая обратная связь пропала.
+    feedback_watchdog_enabled: true # Блокировать команды при потере feedback.
+    feedback_watchdog_timeout_ms: 1000 # Остановить команды при старом feedback, мс.
+    initial_feedback_grace_ms: 1500 # Ожидание первого feedback после enable, мс.
+    feedback_timeout_s: 2.0 # Ожидание state в Python, с.
+    # Kp/Kd используются мотором 7 в MIT. Суставы 1..6 работают в POS_VEL.
+    position_kp: [70.0, 120.0, 120.0, 50.0, 20.0, 20.0, 20.0] # MIT Kp 1..7; важен для гриппера 7.
+    position_kd: [1.0, 1.0, 1.0, 1.0, 2.0, 1.0, 1.0] # MIT Kd 1..7; важен для гриппера 7.
+    # Режим задаёт SDK отдельно каждому мотору; STM применяет эту маску при enable.
+    # Менять режим разрешено только между disable и следующим enable.
+    control_modes: [pos_vel, pos_vel, pos_vel, pos_vel, pos_vel, pos_vel, mit]
+    # POS_VEL принимает целевую позицию и положительный предел скорости, рад/с.
+    # Седьмое значение сейчас не используется, пока гриппер работает в MIT.
+    position_velocity_limits_rad_s: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 2.0]
+    # Знаки координат неизменённого RARS01 URDF совпадают с RARS SDK.
+    joint_directions: [1, 1, 1, 1, 1, 1, 1] # Знак преобразования моторных координат в URDF.
+    # Только погрешность около механической границы обрезается до самой границы.
+    command_limit_epsilon_rad: 0.01
+    # При старте рука должна находиться около этих углов.
+    home_joints_rad: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0] # Home-поза суставов 1..6, рад.
+    start_tolerance_rad: 0.15 # Допуск от home перед стартом, рад.
+    # Единая частота цикла Linux/SDK. STM32 контролирует только watchdog 250 мс.
+    command_rate_hz: 100.0 # Частота потока команд; плавность траектории задаётся также planning/safety.
+    max_grasp_width_m: 0.95 # Максимальная ширина кандидата, м.
+  # Путь к исходному reBotArm_control_py; null использует sdk/reBotArm_control_py.
+  repo_root: null
+  gripper:
+    dm:
+      angle_open: 5.0 # Только исходный DM-гриппер: угол, рад.
+      counterclockwise: true # Только DM: инверсия направления.
+      tau_max: 1.5 # Только DM: лимит момента, Нм.
+      close_torque: 1.7 # Только DM: порог контакта, Нм.
+      default_force: 0.30 # Только DM: момент закрытия, Нм.
+    rs:
+      angle_open: 5.0 # Только исходный RS-гриппер: угол, рад.
+      counterclockwise: false # Только RS: инверсия направления.
+      tau_max: 1.5 # Только RS: лимит момента, Нм.
+      close_torque: 1.5 # Только RS: порог контакта, Нм.
+      default_force: 0.30 # Только RS: момент закрытия, Нм.
+    # RARS01: 0 рад — закрыт, +1 рад — открыт; захват до упора по моменту.
+    rars01:
+      # Угол открытого гриппера, рад; false ниже означает «+угол открывает».
+      angle_open: 1.0
+      counterclockwise: false # false: положительный угол открывает гриппер.
+      tau_max: 1.5 # Максимум MIT момента, Нм.
+      close_torque: 1.5 # Порог контакта при закрытии, Нм.
+      default_force: 1.5 # Момент закрытия по умолчанию, Нм.
+      # Геометрия одноподвижной губки в системе End_link.
+      pivot_End_link_m: [-0.130, -0.0255, 0.0] # Ось подвижной губки в End_link, м.
+      moving_inner_tip_m: [0.130, 0.0255, -0.0055] # Конец подвижной губки, м.
+      fixed_inner_tip_End_link_m: [0.0, 0.0, -0.0055] # Конец неподвижной губки, м.
+      # Xg→Xe, Yg→Ze (раскрытие), Zg→-Ye.
+      R_grasp_End_link:
+        - [1.0, 0.0, 0.0]
+        - [0.0, 0.0, -1.0]
+        - [0.0, 1.0, 0.0]
+  ready_pose:
+    x: 0.3 # X base_link, м.
+    y: 0.0 # Y base_link, м.
+    z: 0.3 # Z base_link, м.
+    roll: 0.0 # Roll TCP, рад.
+    pitch: 0.7 # Pitch TCP, рад.
+    duration: 3.0 # Длительность перехода, с.
+yolo:
+  # Та же модель, которая используется в базовом конфиге оригинального проекта.
+  model_name: "yoloe-26l-seg.pt"
+  device: "cuda:0"
+  use_world: true
+  custom_classes:
+    - "yellow banana"
+    - "water bottle"
+    - "light blue coffee cup"
+    - "cup"
+    - "green object"
+    - "tool"
+
+grasp_pipeline:
+  # graspnet: исходный выбор 6D-захвата по score GraspNet.
+  # central_mask: середина короткой оси; знак выбирается по минимальному повороту от текущей позы.
+  mode: graspnet
+  infer_every_live: 3 # Inference раз в N кадров: больше — меньше GPU, реже обновление.
+  grasp:
+    depth_quantile: 0.5 # Квантиль глубины внутри маски для центральной точки.
+    # camera_ray: заход по лучу камеры, как в оригинале ребят.
+    # vertical: вертикальный заход сверху, ось движения base_link -Z.
+    central_mask_approach: camera_ray
+    pregrasp_offset_m: 0.080 # Безопасный отступ до объекта, м.
+    insertion_depth_m: 0.055 # Врезание от pregrasp к grasp, м.
+    min_base_z_m: 0.000 # Минимальная Z цели в base_link, м.
+    # Минимальная высота внутренних точек обеих губок над плоскостью стола.
+    min_jaw_z_m: 0.02
+
+graspnet:
+  # Локальная копия проверенного GraspNet checkpoint (сама библиотека его не скачивает).
+  checkpoint: "models/checkpoint-rs.tar"
+  num_point: 20000 # Точек облака: больше — стабильнее, медленнее.
+  collision_thresh: 0.01 # Порог collision фильтра GraspNet.
+  min_depth: 0.05 # Ближняя глубина, м.
+  max_depth: 1.0 # Дальняя глубина, м.
+  top_k: 50 # Число лучших кандидатов для анализа.
+  target_class: null # Класс YOLO для фильтра; null — любой.
+  target_margin_px: 12 # Запас вокруг маски, px.
+  target_expand_ratio: 1.35 # Расширение ROI маски для GraspNet.

@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.venv/
+build/
+dist/
+*.egg-info/
+calibration/*.npz
+Log/
+mobileclip2_b.ts
+# Third-party GraspNet/reBot sources and compiled CUDA extensions stay local.
+# Verified runtime weights are kept in models/ and are intentionally versioned.
+sdk/
+checkpoints/

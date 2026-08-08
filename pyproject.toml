@@ -1,0 +1,41 @@
+[project]
+name = "rars01-graspnet"
+version = "0.1.0"
+description = "Eye-in-hand RGB-D grasping pipeline for RARS01"
+# The hardware/GraspNet stack is intentionally locked to CPython 3.10.
+# A narrow range also prevents uv from solving irrelevant macOS/Python 3.11
+# combinations for Pinocchio's cmeel-boost wheels.
+requires-python = ">=3.10,<3.11"
+dependencies = [
+  "numpy>=1.24,<2",
+  "PyYAML>=6",
+  "opencv-contrib-python>=4.8,<5",
+]
+
+[project.optional-dependencies]
+# The Orbbec wheel is platform-dependent, so it is kept separate from the
+# portable calibration/math environment.
+camera = ["pyorbbecsdk2>=2.0"]
+robot = ["pybind11>=2.11"]
+vision = [
+  # Keep the verified CUDA ABI stable for locally compiled GraspNet ops.
+  "torch>=2.13,<2.14",
+  "torchvision>=0.28,<0.29",
+  "ultralytics>=8.4,<8.5",
+  "open3d>=0.18",
+  "scipy>=1.10",
+  "transforms3d>=0.4",
+  "trimesh>=4",
+  "ninja>=1.11",
+]
+dev = ["pytest>=8", "ruff>=0.9"]
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["rars01_graspnet*", "drivers*", "utils*", "calibration*"]
+
+[tool.uv]
+package = true
