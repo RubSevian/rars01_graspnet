@@ -613,6 +613,10 @@ class GraspDriver:
         self._kp_move = 5.0
         self._kd_move = 1.0
         self._kd_close = 0.5
+        # A single moving jaw transmits a noticeable impulse to the wrist if
+        # position holding is enabled in one control tick after contact.
+        self._hold_ramp_s = max(0.0, float(gcfg.get("hold_ramp_s", 0.30)))
+        self._hold_ramp_elapsed = 0.0
         self._stall_vel = 0.05
         self._startup_dist = 0.30
         self._state_lock = threading.Lock()
@@ -816,7 +820,6 @@ class GraspDriver:
             return self._grasp_result is not None
 
     def gripper_tick(self, dt: float = 0.0) -> None:
-        del dt
         pos_vel_torq = self._read_gripper_state_cached()
         with self._state_lock:
             state = self._state
@@ -844,11 +847,23 @@ class GraspDriver:
                     elif moved and abs(vel) < self._stall_vel:
                         self._target_pos = pos
                         self._state = self._STATE_HOLDING
+                        self._hold_ramp_elapsed = 0.0
                         self._grasp_result = True
-                        command = (pos, 0.0, self._kp_move, self._kd_move, self._hold_torque)
+                        # Keep the contact command during this first tick;
+                        # Kp and holding torque are blended in below.
+                        command = (pos, 0.0, 0.0, self._kd_close, self._close_torque)
 
             elif state == self._STATE_HOLDING:
-                command = (self._target_pos, 0.0, self._kp_move, self._kd_move, self._hold_torque)
+                self._hold_ramp_elapsed += max(0.0, float(dt))
+                alpha = (
+                    1.0
+                    if self._hold_ramp_s <= 0.0
+                    else min(1.0, self._hold_ramp_elapsed / self._hold_ramp_s)
+                )
+                kp = alpha * self._kp_move
+                kd = self._kd_close + alpha * (self._kd_move - self._kd_close)
+                tau = self._close_torque + alpha * (self._hold_torque - self._close_torque)
+                command = (self._target_pos, 0.0, kp, kd, tau)
 
         if command is not None:
             pos, vel, kp, kd, tau = command

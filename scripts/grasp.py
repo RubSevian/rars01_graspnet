@@ -156,6 +156,7 @@ def _execute_grasp(
     pre6d: tuple[float, ...],
     retreat6d: tuple[float, ...],
     ready_cfg: dict[str, Any],
+    motion_cfg: dict[str, Any],
     dry_run: bool,
 ) -> bool:
     xg, yg, zg, rxg, ryg, rzg = grasp6d
@@ -188,6 +189,13 @@ def _execute_grasp(
     print("[Grasp] Closing")
     ok = grasp_driver.grasp()
     print("[Grasp] Holding object" if ok else "[Grasp] Empty grasp")
+    # The RARS01 has a single moving jaw.  Let the jaw controller transition
+    # from contact torque to position holding before the arm starts lifting.
+    # This prevents the reaction impulse from being mixed with the retreat.
+    grip_settle_s = float(motion_cfg.get("grip_settle_s", 0.35))
+    if ok and grip_settle_s > 0.0:
+        print(f"[Grasp] Stabilize grip ({grip_settle_s:.2f}s)")
+        time.sleep(grip_settle_s)
 
     print("[Grasp] Retreat")
     if controller.move_to_traj(xr, yr, zr, rxr, ryr, rzr, duration=1.5):
@@ -463,6 +471,7 @@ def main() -> int:
         "ready_pose",
         {"x": 0.25, "y": 0.0, "z": 0.35, "roll": 0.0, "pitch": 1.2, "yaw": 0.0, "duration": 3.0},
     )
+    motion_cfg = robot_cfg.get("motion", {})
     pipeline_cfg = cfg.get("grasp_pipeline", {})
     grasp_mode = str(pipeline_cfg.get("mode", "graspnet")).lower()
     if grasp_mode not in ("graspnet", "central_mask"):
@@ -570,10 +579,13 @@ def main() -> int:
             rebotarm = RarsRebotArm(robot_cfg, PROJECT_ROOT)
             controller = RebotArmEndPose(
                 rebotarm,
-                arm_control_mode="mit",
+                # Joints 1..6 use the STM POS/VEL profile.  The gripper is
+                # independently kept in MIT by GraspDriver.
+                dt=1.0 / rebotarm.rate,
+                arm_control_mode="posvel",
                 use_gravity_ff=False,
             )
-            mode_name = "mit (RARS transport)"
+            mode_name = "posvel arm + mit gripper (RARS transport)"
         else:
             from reBotArm_control_py.actuator import RebotArm
 
@@ -801,6 +813,7 @@ def main() -> int:
                     pre6d,
                     retreat6d,
                     ready_cfg,
+                    motion_cfg,
                     dry_run=args.dry_run,
                 )
 
