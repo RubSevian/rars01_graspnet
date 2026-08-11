@@ -442,6 +442,7 @@ class RarsRebotArm:
                 except Exception as exc:
                     self._failure = exc
                     self._running = False
+                    print(f"[RARS01] control loop fault: {exc}", flush=True)
                     return
                 time.sleep(max(0.0, dt - (time.perf_counter() - started)))
 

@@ -242,8 +242,17 @@ class OrbbecCamera:
 
 def camera_from_config(config: dict) -> OrbbecCamera:
     camera = config["camera"]
+    # The project-wide camera schema uses color_width/color_height.  Keep the
+    # short names as a compatibility fallback for older standalone configs.
+    width = camera.get("color_width", camera.get("width"))
+    height = camera.get("color_height", camera.get("height"))
+    if width is None or height is None:
+        raise KeyError(
+            "camera.color_width and camera.color_height are required "
+            "(legacy camera.width/camera.height are also accepted)"
+        )
     return OrbbecCamera(
-        camera["width"], camera["height"], camera["fps"], camera.get("timeout_ms", 1000),
+        width, height, camera["fps"], camera.get("timeout_ms", 1000),
         camera.get("frame_id", "camera_color_optical_frame"),
         camera.get("alignment", "auto"),
     )

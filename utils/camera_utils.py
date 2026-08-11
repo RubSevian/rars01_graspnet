@@ -7,20 +7,18 @@ from pathlib import Path
 from typing import Any, Optional
 
 import numpy as np
-import yaml
 
 try:
     from ..drivers.camera import CameraDriver, make_camera
 except ImportError:
     from drivers.camera import CameraDriver, make_camera
 
+from rars01_graspnet.config import load_config as _load_project_config
+
 
 def load_config(path: str | Path) -> dict[str, Any]:
-    config_path = Path(path).expanduser()
-    if not config_path.exists():
-        raise FileNotFoundError(f"Config not found: {config_path}")
-    with open(config_path, encoding="utf-8") as f:
-        return yaml.safe_load(f)
+    """Load the shared config, including an optional ``extends`` parent."""
+    return _load_project_config(path)
 
 
 def load_hand_eye(project_root: str | Path, cam_type: str) -> tuple[Optional[np.ndarray], Optional[str]]:

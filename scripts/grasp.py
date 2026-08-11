@@ -91,6 +91,17 @@ def _wait_motion(controller: Any, duration: float, extra: float = 0.6) -> None:
         thread.join(timeout=duration + extra + 2.0)
     else:
         time.sleep(duration + extra)
+    # RarsRebotArm deliberately executes its 100 Hz callback in a background
+    # thread.  Surface its exception immediately: otherwise the main UI keeps
+    # printing the remaining grasp steps after the SDK has stopped commands,
+    # which lets the STM watchdog disable the motors without the actual cause
+    # appearing in the terminal log.
+    transport = getattr(controller, "rebotarm", None)
+    failure = getattr(transport, "_failure", None)
+    if failure is not None:
+        raise RuntimeError(f"RARS01 control loop failed: {failure}") from failure
+    if transport is not None and not getattr(transport, "_running", True):
+        raise RuntimeError("RARS01 control loop stopped unexpectedly")
 
 
 def _move_ready(controller: Any, ready_cfg: dict[str, Any]) -> None:

@@ -11,7 +11,12 @@ from typing import Any, Optional
 
 import cv2
 import numpy as np
-import open3d as o3d
+try:
+    import open3d as o3d
+except ImportError:
+    # Open3D does not publish a Linux ARM64 CPython 3.12 wheel.  It is only
+    # used for the optional visualizer, never for GraspNet inference.
+    o3d = None
 import torch
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
@@ -78,12 +83,14 @@ class GraspNetFrameResult:
     target_status: str
     detections: list[YoloDetection]
     selected_target: Optional[YoloDetection]
-    o3d_cloud: o3d.geometry.PointCloud
+    o3d_cloud: Any | None
     raw_cloud: np.ndarray
 
 
 class Open3DGraspWindow:
     def __init__(self, title: str, top_k: int) -> None:
+        if o3d is None:
+            raise RuntimeError("Open3D is unavailable; start with --no-open3d")
         self._top_k = top_k
         self._vis = o3d.visualization.Visualizer()
         if not self._vis.create_window(title, width=1280, height=720):
@@ -186,7 +193,7 @@ def build_end_points(
     num_point: int,
     min_depth_m: float,
     max_depth_m: float,
-) -> tuple[dict, o3d.geometry.PointCloud, np.ndarray]:
+) -> tuple[dict, Any | None, np.ndarray]:
     if color_bgr.shape[:2] != depth_mm.shape[:2]:
         depth_mm = cv2.resize(depth_mm, (color_bgr.shape[1], color_bgr.shape[0]), interpolation=cv2.INTER_NEAREST)
 
@@ -220,9 +227,11 @@ def build_end_points(
         "cloud_colors": color_masked[idxs],
     }
 
-    o3d_cloud = o3d.geometry.PointCloud()
-    o3d_cloud.points = o3d.utility.Vector3dVector(cloud_masked.astype(np.float32))
-    o3d_cloud.colors = o3d.utility.Vector3dVector(color_masked.astype(np.float32))
+    o3d_cloud = None
+    if o3d is not None:
+        o3d_cloud = o3d.geometry.PointCloud()
+        o3d_cloud.points = o3d.utility.Vector3dVector(cloud_masked.astype(np.float32))
+        o3d_cloud.colors = o3d.utility.Vector3dVector(color_masked.astype(np.float32))
     return end_points, o3d_cloud, cloud_masked
 
 
@@ -475,7 +484,6 @@ def infer_frame(
         if selected_target is None:
             target_status = target_status_text(selected_target, detections, target_class)
             empty = GraspGroup()
-            empty_cloud = o3d.geometry.PointCloud()
             return GraspNetFrameResult(
                 grasps=empty,
                 pre_bbox_grasps=empty,
@@ -485,7 +493,7 @@ def infer_frame(
                 target_status=target_status,
                 detections=detections,
                 selected_target=None,
-                o3d_cloud=empty_cloud,
+                o3d_cloud=None,
                 raw_cloud=np.empty((0, 3), dtype=np.float32),
             )
         target_label = f"{selected_target.class_name} {selected_target.conf:.2f}"

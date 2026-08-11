@@ -17,6 +17,9 @@ YOLOE и GraspNet. Камера установлена на руке; полож
 Будущая замена механики гриппера на конструкцию reBot описана в
 [`FUTURE_REBOT_GRIPPER.md`](FUTURE_REBOT_GRIPPER.md).
 
+Для Jetson Orin Nano 8 GB с JetPack 7.2 используйте отдельную пошаговую
+инструкцию: [`README_JETSON_ORIN_NANO.md`](README_JETSON_ORIN_NANO.md).
+
 ## Структура
 
 ```text

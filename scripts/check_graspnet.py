@@ -9,7 +9,7 @@ from pathlib import Path
 
 import torch
 
-import yaml
+from rars01_graspnet.config import load_config
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -32,8 +32,7 @@ def main() -> None:
     parser.add_argument("--allow-missing-checkpoint", action="store_true")
     args = parser.parse_args()
     config_path = Path(args.config).expanduser() if args.config else PROJECT_ROOT / "config" / "default.yaml"
-    with config_path.resolve().open(encoding="utf-8") as stream:
-        config = yaml.safe_load(stream) or {}
+    config = load_config(config_path)
     checkpoint = Path(config["graspnet"]["checkpoint"]).expanduser()
     if not checkpoint.is_absolute():
         checkpoint = PROJECT_ROOT / checkpoint

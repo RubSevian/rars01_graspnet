@@ -2,12 +2,13 @@
 name = "rars01-graspnet"
 version = "0.1.0"
 description = "Eye-in-hand RGB-D grasping pipeline for RARS01"
-# The hardware/GraspNet stack is intentionally locked to CPython 3.10.
-# A narrow range also prevents uv from solving irrelevant macOS/Python 3.11
-# combinations for Pinocchio's cmeel-boost wheels.
-requires-python = ">=3.10,<3.11"
+# Desktop development uses CPython 3.10; JetPack 7.2 / Ubuntu 24.04 ships
+# CPython 3.12. Native packages (PyTorch, Pinocchio and Orbbec) are installed
+# separately on Jetson because their wheels are platform and CUDA specific.
+requires-python = ">=3.10,<3.13"
 dependencies = [
-  "numpy>=1.24,<2",
+  # Pinocchio 3.9 (reBot) requires the NumPy 2.3 ABI.
+  "numpy>=2.3,<2.4",
   "PyYAML>=6",
   "opencv-contrib-python>=4.8,<5",
 ]
@@ -23,7 +24,7 @@ vision = [
   "torchvision>=0.28,<0.29",
   "ultralytics>=8.4,<8.5",
   "open3d>=0.18",
-  "scipy>=1.10",
+  "scipy>=1.15,<1.19",
   "transforms3d>=0.4",
   "trimesh>=4",
   "ninja>=1.11",

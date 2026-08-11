@@ -1,0 +1,25 @@
+diff --git a/graspnetAPI/grasp.py b/graspnetAPI/grasp.py
+--- a/graspnetAPI/grasp.py
++++ b/graspnetAPI/grasp.py
+@@ -1,7 +1,10 @@
+ __author__ = 'mhgou'
+ 
+ import numpy as np
+-import open3d as o3d
++try:
++    import open3d as o3d
++except ImportError:
++    o3d = None
+ import copy
+ import cv2
+diff --git a/graspnetAPI/utils/utils.py b/graspnetAPI/utils/utils.py
+--- a/graspnetAPI/utils/utils.py
++++ b/graspnetAPI/utils/utils.py
+@@ -1,5 +1,8 @@
+ import numpy as np
+-import open3d as o3d
++try:
++    import open3d as o3d
++except ImportError:
++    o3d = None
+ import math

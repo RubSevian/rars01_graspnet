@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
+import sys
 import threading
 import time
 
 import numpy as np
 
 from .contracts import Header, RobotState
+from .config import resolve_path
 from .trajectory import minimum_jerk_samples
 
 
@@ -471,14 +474,31 @@ class RarsRobot:
 
 def robot_from_config(config: dict) -> RarsRobot:
     robot = config["robot"]
+    # Current RARS01 configs keep all hardware parameters under robot.rars01.
+    # Keep the former flat layout usable for older local configs.
+    hardware = robot.get("rars01") if isinstance(robot.get("rars01"), dict) else robot
+    if not isinstance(hardware, dict):
+        raise ValueError("robot.rars01 must be a mapping")
+    sdk_python_path = hardware.get("sdk_python_path")
+    if sdk_python_path:
+        sdk_directory = resolve_path(config, sdk_python_path)
+        if not sdk_directory.is_dir():
+            raise FileNotFoundError(
+                f"RARS SDK Python directory does not exist: {sdk_directory}. "
+                "Build rars_arm_sdk with -DRARS_ARM_BUILD_PYTHON=ON."
+            )
+        sdk_directory_text = str(sdk_directory)
+        if sdk_directory_text not in sys.path:
+            sys.path.insert(0, sdk_directory_text)
     control = robot.get("control", {})
     completion = control.get("motion_completion", {})
     return RarsRobot(
-        robot["port"], robot["baud_rate"], robot.get("feedback_timeout_s", 2.0),
-        position_kp=control.get("position_kp"), position_kd=control.get("position_kd"),
-        feedback_watchdog_enabled=robot.get("feedback_watchdog_enabled", True),
-        feedback_watchdog_timeout_ms=robot.get("feedback_watchdog_timeout_ms", 1000),
-        initial_feedback_grace_ms=robot.get("initial_feedback_grace_ms", 1500),
+        hardware["port"], hardware["baud_rate"], hardware.get("feedback_timeout_s", 2.0),
+        position_kp=hardware.get("position_kp", control.get("position_kp")),
+        position_kd=hardware.get("position_kd", control.get("position_kd")),
+        feedback_watchdog_enabled=hardware.get("feedback_watchdog_enabled", True),
+        feedback_watchdog_timeout_ms=hardware.get("feedback_watchdog_timeout_ms", 1000),
+        initial_feedback_grace_ms=hardware.get("initial_feedback_grace_ms", 1500),
         target_tolerance_rad=completion.get("target_tolerance_rad", 0.08),
         target_settle_timeout_s=completion.get("settle_timeout_s", 1.5),
         target_stable_samples=completion.get("stable_samples", 3),

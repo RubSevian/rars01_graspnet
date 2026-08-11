@@ -7,7 +7,7 @@ import time
 
 import numpy as np
 
-from rars01_graspnet.config import load_config, resolve_path
+from rars01_graspnet.config import load_config, robot_kinematics_config
 from rars01_graspnet.kinematics import RarsKinematics
 from rars01_graspnet.robot import robot_from_config
 
@@ -23,8 +23,8 @@ def main() -> None:
     )
     args = parser.parse_args()
     config = load_config(args.config)
-    rc = config["robot"]
-    fk = RarsKinematics(resolve_path(config, rc["urdf"]), rc["base_frame"], rc["tcp_frame"])
+    urdf, base_frame, tcp_frame = robot_kinematics_config(config)
+    fk = RarsKinematics(urdf, base_frame, tcp_frame)
     print("URDF joints:", ", ".join(fk.joint_names))
     print("URDF lower:", np.round(fk.lower_limits, 4))
     print("URDF upper:", np.round(fk.upper_limits, 4))

@@ -1,0 +1,19 @@
+diff --git a/utils/collision_detector.py b/utils/collision_detector.py
+--- a/utils/collision_detector.py
++++ b/utils/collision_detector.py
+@@ -5,7 +5,6 @@ import os
+ import sys
+ import numpy as np
+-import open3d as o3d
+@@ -29,10 +28,12 @@ class ModelFreeCollisionDetector():
+         self.finger_width = 0.01
+         self.finger_length = 0.06
+         self.voxel_size = voxel_size
+-        scene_cloud = o3d.geometry.PointCloud()
+-        scene_cloud.points = o3d.utility.Vector3dVector(scene_points)
+-        scene_cloud = scene_cloud.voxel_down_sample(voxel_size)
+-        self.scene_points = np.array(scene_cloud.points)
++        points = np.asarray(scene_points, dtype=np.float32)
++        voxel_indices = np.floor(points / float(voxel_size)).astype(np.int64)
++        _, first_indices = np.unique(voxel_indices, axis=0, return_index=True)
++        self.scene_points = points[np.sort(first_indices)]

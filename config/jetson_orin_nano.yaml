@@ -1,0 +1,11 @@
+# Small-memory profile for Jetson Orin Nano 8 GB / JetPack 7.2.
+# All robot geometry, calibration and safety parameters come from default.yaml.
+extends: default.yaml
+
+yolo:
+  model_name: yoloe-26s-seg.pt
+  device: cuda:0
+
+graspnet:
+  num_point: 10000
+  top_k: 20
