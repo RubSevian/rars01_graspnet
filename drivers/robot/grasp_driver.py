@@ -4,8 +4,6 @@ The SDK owns arm connection, mode switching, Cartesian planning, gravity
 compensation, and the control loop. This module provides only the extra
 gripper and pose helpers used by the vision workflows.
 
-selected_arm_config(): read the SDK hardware YAML and choose controller mode.
-
 GraspDriver:
   start(): start SDK control and attach gripper tick handling.
   open_gripper(): open to a requested jaw distance.
@@ -20,18 +18,12 @@ from __future__ import annotations
 import sys
 import threading
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Optional
 
 import numpy as np
-import yaml
 
-
-_CAMERAWS_ROOT = Path(__file__).resolve().parents[2]
-_REBOT_REPO_NAME = "reBotArm_control_py"
-_DEFAULT_REBOT_REPO = _CAMERAWS_ROOT / "sdk" / _REBOT_REPO_NAME
 
 GRIPPER_MAX_DISTANCE_M = 0.09
 
@@ -60,7 +52,7 @@ class _RarsMotor:
 
 
 class _RarsGroup:
-    """RARS motor group with the interface expected by reBotArm_control_py."""
+    """RARS motor group used by the local RARS01 motion controller."""
 
     def __init__(self, owner: "RarsRebotArm", name: str, indices: list[int]) -> None:
         self._owner = owner
@@ -464,92 +456,6 @@ class RarsRebotArm:
                 self._connected = False
 
 
-@dataclass(frozen=True)
-class SelectedArmConfig:
-    arm_type: str
-    controller_mode: str
-
-
-def _is_rebot_repo_root(path: Path) -> bool:
-    pkg = path / _REBOT_REPO_NAME
-    return (
-        path.is_dir()
-        and (pkg / "actuator" / "rebotarm.py").is_file()
-        and (path / "config" / "rebotarm.yaml").is_file()
-    )
-
-
-def find_rebot_repo_root(hint: Optional[str] = None) -> Path:
-    if hint:
-        requested = Path(hint).expanduser()
-        candidates = [
-            requested if requested.is_absolute() else _CAMERAWS_ROOT / requested
-        ]
-    else:
-        # Preferred portable layout, followed by the current development
-        # workspace layouts. This keeps config/default.yaml machine-independent.
-        candidates = [
-            _DEFAULT_REBOT_REPO,
-            _CAMERAWS_ROOT.parent / "reBotArm_control_py",
-            _CAMERAWS_ROOT.parent / "reBot-DevArm-Grasp" / "sdk" / _REBOT_REPO_NAME,
-        ]
-
-    checked: list[Path] = []
-    for candidate in candidates:
-        repo = candidate.resolve()
-        checked.append(repo)
-        if _is_rebot_repo_root(repo):
-            return repo
-    locations = "\n  - ".join(str(path) for path in checked)
-    raise FileNotFoundError(
-        "reBotArm_control_py repo was not found. Checked:\n  - " + locations
-    )
-
-
-def ensure_rebot_sdk_in_syspath(hint: Optional[str] = None) -> Path:
-    repo = find_rebot_repo_root(hint)
-    repo_str = str(repo)
-    if repo_str not in sys.path:
-        sys.path.insert(0, repo_str)
-    return repo
-
-
-def _read_yaml(path: Path) -> dict:
-    with path.open("r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-    if not isinstance(data, dict):
-        raise ValueError(f"{path} must be a YAML mapping")
-    return data
-
-
-def selected_hardware_yaml(repo_root: Optional[str] = None) -> Path:
-    repo = find_rebot_repo_root(repo_root)
-    config_dir = repo / "config"
-    global_cfg = _read_yaml(config_dir / "rebotarm.yaml")
-    hw_yaml = global_cfg.get("hardware_yaml")
-    if not hw_yaml:
-        raise ValueError(f"{config_dir / 'rebotarm.yaml'} missing hardware_yaml")
-
-    hw_path = Path(str(hw_yaml))
-    if not hw_path.is_absolute():
-        hw_path = config_dir / hw_path
-    hw_path = hw_path.resolve()
-    if not hw_path.is_file():
-        raise FileNotFoundError(f"Hardware config not found: {hw_path}")
-    return hw_path
-
-
-def selected_arm_config(repo_root: Optional[str] = None) -> SelectedArmConfig:
-    """Return the selected arm type and matching SDK controller mode."""
-    hw_path = selected_hardware_yaml(repo_root)
-    stem = hw_path.stem.lower()
-    if stem.endswith("_dm") or stem == "dm":
-        return SelectedArmConfig(arm_type="dm", controller_mode="posvel")
-    if stem.endswith("_rs") or stem == "rs":
-        return SelectedArmConfig(arm_type="rs", controller_mode="mit")
-    raise ValueError(f"Cannot infer arm type from hardware config: {hw_path}")
-
-
 class GraspDriver:
     MAX_DISTANCE_M = GRIPPER_MAX_DISTANCE_M
     _STATE_IDLE = "idle"
@@ -578,19 +484,18 @@ class GraspDriver:
         self._gripper_name = gripper_jcfgs[0].name
         self._gripper_motor: Any = None
 
-        from reBotArm_control_py.kinematics import compute_fk, load_robot_model, pad_q_for_model
+        from rars01_graspnet.rebot_math import compute_fk, pad_q_for_model
 
         self._compute_fk = compute_fk
         self._pad_q_for_model = pad_q_for_model
-        load_arm_model = getattr(arm, "load_kinematic_model", None)
-        self._model = load_arm_model() if load_arm_model is not None else load_robot_model()
+        self._model = arm.load_kinematic_model()
+        self._end_frame_id = self._model.getFrameId("end_link")
         self._n = self._arm_group.num_joints
-        configure_controller = getattr(arm, "configure_controller_kinematics", None)
-        if configure_controller is not None:
-            configure_controller(self._controller)
 
-        selected = selected_arm_config(repo_root)
-        backend = str(getattr(arm, "backend", selected.arm_type))
+        # RARS01 does not read a reBot hardware YAML.  The external reBot
+        # project is not a runtime dependency of this driver.
+        del repo_root
+        backend = str(getattr(arm, "backend", "rars01"))
         defaults = {
             "dm": {"angle_open": 5.0, "counterclockwise": True, "tau_max": 1.5, "close_torque": 1.0, "default_force": 0.30},
             "rs": {"angle_open": 5.0, "counterclockwise": False, "tau_max": 1.5, "close_torque": 1.0, "default_force": 0.30},
@@ -915,7 +820,7 @@ class GraspDriver:
     def get_tcp_pose(self) -> np.ndarray:
         q_arm = self._arm.get_state(request_feedback=False)[0][: self._n]
         q = self._pad_q_for_model(self._model, q_arm, self._n)
-        pos, rot, _ = self._compute_fk(self._model, q)
+        pos, rot, _ = self._compute_fk(self._model, q, self._end_frame_id)
         T = np.eye(4, dtype=np.float64)
         T[:3, :3] = rot
         T[:3, 3] = pos

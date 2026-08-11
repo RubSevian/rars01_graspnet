@@ -56,10 +56,15 @@ _prepare_imports()
 
 from drivers.camera import make_camera  # noqa: E402
 from drivers.robot.grasp_driver import (  # noqa: E402
-    GRIPPER_MAX_DISTANCE_M,
     GraspDriver,
     RarsRebotArm,
-    selected_arm_config,
+)
+from rars01_graspnet.rebot_math import (  # noqa: E402
+    IKParams,
+    RarsEndPoseController,
+    pad_q_for_model,
+    pos_rot_to_se3,
+    solve_ik,
 )
 import utils.graspnet_utils as graspnet_utils  # noqa: E402
 from utils.camera_utils import compose_cam_to_base_transform, configure_camera, load_config, load_hand_eye  # noqa: E402
@@ -109,36 +114,23 @@ def _move_ready(controller: Any, ready_cfg: dict[str, Any]) -> None:
 
 class IkChecker:
     def __init__(self, arm: Any) -> None:
-        from reBotArm_control_py.kinematics import (
-            get_end_effector_frame_id,
-            load_robot_model,
-            pad_q_for_model,
-            pos_rot_to_se3,
-            solve_ik,
-        )
-        from reBotArm_control_py.kinematics.inverse_kinematics import IKParams
-
         self._arm = arm
         self._arm_group = arm.groups.get("arm")
         if self._arm_group is None:
             raise ValueError("Hardware config missing groups.arm")
         self._n = self._arm_group.num_joints
-        self._pad_q_for_model = pad_q_for_model
-        self._pos_rot_to_se3 = pos_rot_to_se3
-        self._solve_ik = solve_ik
-        load_arm_model = getattr(arm, "load_kinematic_model", None)
-        self._model = load_arm_model() if load_arm_model is not None else load_robot_model()
+        self._model = arm.load_kinematic_model()
         self._data = self._model.createData()
-        self._end_frame_id = get_end_effector_frame_id(self._model)
+        self._end_frame_id = self._model.getFrameId("end_link")
         self._params = IKParams(max_iter=200, tolerance=1e-4, step_size=0.5, damping=1e-6)
 
     def check(self, x: float, y: float, z: float, roll: float, pitch: float, yaw: float) -> tuple[bool, float]:
         q_now = self._arm.get_state(request_feedback=False)[0][: self._n]
-        q_init = self._pad_q_for_model(self._model, q_now, self._n)
-        target = self._pos_rot_to_se3(
+        q_init = pad_q_for_model(self._model, q_now, self._n)
+        target = pos_rot_to_se3(
             np.array([x, y, z], dtype=np.float64), roll=roll, pitch=pitch, yaw=yaw
         )
-        result = self._solve_ik(
+        result = solve_ik(
             self._model,
             self._data,
             self._end_frame_id,
@@ -416,7 +408,7 @@ def _select_executable_grasp(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="GraspNet/central-mask robot grasp demo")
     parser.add_argument("--config", default=str(PROJECT_ROOT / "config" / "default.yaml"))
-    parser.add_argument("--robot-backend", choices=("rebot", "rars01"), default=None)
+    parser.add_argument("--robot-backend", choices=("rars01",), default="rars01")
     parser.add_argument(
         "--checkpoint",
         default=None,
@@ -463,10 +455,7 @@ def main() -> int:
 
     robot_cfg = cfg.get("robot", {})
     robot_backend = str(args.robot_backend or robot_cfg.get("backend", "rebot")).lower()
-    max_grasp_width_m = (
-        float(robot_cfg.get("rars01", {}).get("max_grasp_width_m", 0.111))
-        if robot_backend == "rars01" else GRIPPER_MAX_DISTANCE_M
-    )
+    max_grasp_width_m = float(robot_cfg.get("rars01", {}).get("max_grasp_width_m", 0.111))
     ready_cfg = robot_cfg.get(
         "ready_pose",
         {"x": 0.25, "y": 0.0, "z": 0.35, "roll": 0.0, "pitch": 1.2, "yaw": 0.0, "duration": 3.0},
@@ -567,8 +556,6 @@ def main() -> int:
         print(f"[Pipeline] grasp mode: {grasp_mode}")
 
         print("=== Init robot ===")
-        from reBotArm_control_py.controllers import RebotArmEndPose
-
         if robot_backend == "rars01":
             answer = input(
                 "RARS01: place the arm in zero/home, clear the path and type START: "
@@ -577,22 +564,16 @@ def main() -> int:
                 print("[RARS01] Cancelled before serial or motors were opened")
                 return 0
             rebotarm = RarsRebotArm(robot_cfg, PROJECT_ROOT)
-            controller = RebotArmEndPose(
+            controller = RarsEndPoseController(
                 rebotarm,
                 # Joints 1..6 use the STM POS/VEL profile.  The gripper is
                 # independently kept in MIT by GraspDriver.
                 dt=1.0 / rebotarm.rate,
                 arm_control_mode="posvel",
-                use_gravity_ff=False,
             )
             mode_name = "posvel arm + mit gripper (RARS transport)"
         else:
-            from reBotArm_control_py.actuator import RebotArm
-
-            selected = selected_arm_config(robot_cfg.get("repo_root"))
-            rebotarm = RebotArm()
-            controller = RebotArmEndPose(rebotarm, arm_control_mode=selected.controller_mode)
-            mode_name = selected.controller_mode
+            raise ValueError("This repository executes RARS01 only; set robot.backend: rars01")
 
         grasp_driver = GraspDriver(
             rebotarm,

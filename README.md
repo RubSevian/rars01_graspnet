@@ -24,7 +24,8 @@ calibration/                 Python-код hand-eye/Aruco
 config/default.yaml          основной конфиг робота и захвата
 config/calibration/          intrinsics и текущая hand-eye матрица
 drivers/camera/              Gemini 336 и RealSense
-drivers/robot/               адаптер RARS01 к алгоритмам reBot и гриппер
+drivers/robot/               адаптер RARS01 и управление гриппером
+ rars01_graspnet/rebot_math.py локальные Pinocchio IK и Cartesian minimum-jerk
 models/                      локальные веса YOLO и GraspNet
 scripts/grasp.py             основной запуск захвата
 scripts/collect_handeye_eih.py автоматическая eye-in-hand калибровка
@@ -42,9 +43,7 @@ utils/                       YOLO, GraspNet, преобразования и в�
 
 1. `rars_arm_sdk` — обмен с моторами и модуль `rars_arm_py`;
 2. `rars01_description` — `urdf/rars01.urdf` и meshes;
-3. `reBotArm_control_py` — Pinocchio IK и исходный Cartesian/minimum-jerk
-   контроллер;
-4. `graspnet-baseline` и `graspnetAPI` — нейросеть и API GraspNet.
+3. `graspnet-baseline` и `graspnetAPI` — нейросеть и API GraspNet.
 
 Текущая рабочая раскладка:
 
@@ -53,13 +52,29 @@ RARS_sdk_grasp_net/
 ├── rars01_graspnet/
 ├── rars_arm_sdk/
 ├── rars01_description/
-└── reBot-DevArm-Grasp/sdk/reBotArm_control_py/
 ```
 
-Драйвер автоматически ищет reBot-контроллер также в переносимом варианте
-`rars01_graspnet/sdk/reBotArm_control_py` и в соседнем
-`../reBotArm_control_py`. Явный путь можно задать в
-`robot.repo_root` файла `config/default.yaml`.
+`scripts/grasp.py` не зависит от внешнего reBot-пакета: нужная математика
+(Pinocchio FK/IK, SE(3) minimum-jerk и CLIK) находится в
+`rars01_graspnet/rebot_math.py`. Репозиторий `reBot-DevArm-Grasp` нужен только
+как исходный референс, а не для запуска RARS01.
+
+Старые `scripts/main.py` и `scripts/collect_handeye_eih.py` сохранены только
+как совместимые точки входа и перенаправляют соответственно в `grasp.py` и
+`calibrate_hand_eye_auto.py`. Бывший `set.py` был сценарием другого железа и
+на RARS01 намеренно отключён.
+
+Pinocchio — нативная зависимость RARS01, которую нельзя включать в общий
+`uv`-resolver вместе с GraspNet: актуальный пакет `pin` объявляет NumPy 2.x,
+а GraspNet работает с NumPy 1.x. Устанавливайте проверенную версию Pinocchio
+отдельно для конкретной платформы, затем проверьте:
+
+```bash
+uv run python -c "import pinocchio; print(pinocchio.__version__)"
+```
+
+На Jetson способ установки Pinocchio фиксируется в отдельном Jetson setup
+скрипте; на рабочем ПК он уже установлен в `.venv`.
 
 ## Существующее окружение
 
@@ -77,13 +92,6 @@ uv run python -m pytest -q
 ```bash
 uv python install 3.10
 uv sync --python 3.10 --extra camera --extra robot --extra vision --extra dev
-```
-
-После этого установите reBot-контроллер в то же окружение, например для текущей
-структуры workspace:
-
-```bash
-uv pip install -e ../reBot-DevArm-Grasp/sdk/reBotArm_control_py
 ```
 
 ## RARS SDK
