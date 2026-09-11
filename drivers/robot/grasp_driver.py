@@ -28,12 +28,14 @@ from typing import Any, Optional
 import numpy as np
 import yaml
 
+from rars01_graspnet.gripper_geometry import RarsGripperGeometry
+
 
 _CAMERAWS_ROOT = Path(__file__).resolve().parents[2]
 _REBOT_REPO_NAME = "reBotArm_control_py"
 _DEFAULT_REBOT_REPO = _CAMERAWS_ROOT / "sdk" / _REBOT_REPO_NAME
 
-GRIPPER_MAX_DISTANCE_M = 0.09
+GRIPPER_MAX_DISTANCE_M = 0.100
 
 
 def _motor_array(value: Any, name: str) -> np.ndarray:
@@ -153,6 +155,13 @@ class RarsRebotArm:
         sdk_cfg = sdk.ArmConfiguration()
         sdk_cfg.port_name = str(hardware.get("port", "/dev/ttyACM0"))
         sdk_cfg.baud_rate = int(hardware.get("baud_rate", 921600))
+        self._port_name = sdk_cfg.port_name
+        self._port_wait_timeout_s = max(
+            0.0, float(hardware.get("port_wait_timeout_s", 0.0))
+        )
+        self._port_retry_interval_s = max(
+            0.1, float(hardware.get("port_retry_interval_s", 1.0))
+        )
         sdk_cfg.feedback_watchdog_enabled = bool(hardware.get("feedback_watchdog_enabled", True))
         sdk_cfg.feedback_timeout_ms = int(hardware.get("feedback_watchdog_timeout_ms", 1000))
         sdk_cfg.initial_feedback_grace_ms = int(hardware.get("initial_feedback_grace_ms", 1500))
@@ -174,9 +183,11 @@ class RarsRebotArm:
         pv_limits = hardware.get(
             "position_velocity_limits_rad_s", [self._velocity_limit] * 6 + [2.0]
         )
-        sdk_cfg.position_velocity_limits = _motor_array(
-            pv_limits, "position_velocity_limits_rad_s"
-        ).tolist()
+        pv_limits_array = _motor_array(pv_limits, "position_velocity_limits_rad_s")
+        sdk_cfg.position_velocity_limits = pv_limits_array.tolist()
+        # The sixth-axis pose controller uses these same hard limits when it
+        # chooses a duration for a minimum-jerk calibration move.
+        self.position_velocity_limits_rad_s = pv_limits_array[:6].copy()
 
         directions = _motor_array(
             hardware.get("joint_directions", [1, 1, 1, 1, 1, 1, 1]),
@@ -208,7 +219,7 @@ class RarsRebotArm:
         self._urdf_path = urdf_path
         self._end_effector_frame = str(hardware.get("end_effector_frame", "End_link"))
         self._feedback_timeout = float(hardware.get("feedback_timeout_s", 2.0))
-        self.max_grasp_width_m = float(hardware.get("max_grasp_width_m", 0.111))
+        self.max_grasp_width_m = float(hardware.get("max_grasp_width_m", 0.100))
         self._joint_lower = lower
         self._joint_upper = upper
         self._limit_epsilon = float(hardware.get("command_limit_epsilon_rad", 0.01))
@@ -303,10 +314,21 @@ class RarsRebotArm:
         controller._end_frame_id = model.getFrameId("end_link")
 
     def connect(self) -> None:
-        if not self._connected:
-            if not self._sdk_arm.connect():
-                raise RuntimeError(f"RARS01 connect failed: {self._sdk_arm.last_error}")
-            self._connected = True
+        if self._connected:
+            return
+        deadline = time.monotonic() + self._port_wait_timeout_s
+        last_error = ""
+        while True:
+            if self._sdk_arm.connect():
+                self._connected = True
+                return
+            last_error = str(self._sdk_arm.last_error)
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"RARS01 port {self._port_name} did not become available "
+                    f"within {self._port_wait_timeout_s:.1f}s: {last_error}"
+                )
+            time.sleep(self._port_retry_interval_s)
 
     def _enable(self) -> None:
         if not self._enabled:
@@ -606,52 +628,52 @@ class GraspDriver:
         self._close_sign = motion_sign
         self._close_torque = self._close_sign * abs(float(gcfg["close_torque"]))
         self._default_force = self._close_sign * abs(float(gcfg["default_force"]))
-        self._open_soft_limit = 0.98 * self._angle_open
-        self._open_lo = min(self._open_soft_limit, 0.0)
-        self._open_hi = max(self._open_soft_limit, 0.0)
-        self._hard_stop_angle = self._open_sign * 0.05
-        self._arrive_tol = 0.12
-        self._kp_move = 5.0
-        self._kd_move = 1.0
-        self._kd_close = 0.5
-        # A single moving jaw transmits a noticeable impulse to the wrist if
-        # position holding is enabled in one control tick after contact.
+        self._closed_position = float(gcfg.get("closed_position_rad", 0.0))
+        self._open_soft_limit = self._closed_position + 0.98 * self._angle_open
+        self._open_lo = min(self._open_soft_limit, self._closed_position)
+        self._open_hi = max(self._open_soft_limit, self._closed_position)
+        self._hard_stop_offset = abs(float(gcfg.get("hard_stop_angle_rad", 0.05)))
+        self._arrive_tol = abs(float(gcfg.get("arrive_tolerance_rad", 0.12)))
+        self._kp_move = float(gcfg.get("move_kp", 5.0))
+        self._kd_move = float(gcfg.get("move_kd", 1.0))
+        self._kp_hold = float(gcfg.get("hold_kp", self._kp_move))
+        self._kd_hold = float(gcfg.get("hold_kd", self._kd_move))
+        self._kd_close = float(gcfg.get("close_kd", 0.5))
+        # Blend torque contact into position holding to avoid a wrist impulse.
         self._hold_ramp_s = max(0.0, float(gcfg.get("hold_ramp_s", 0.30)))
         self._hold_ramp_elapsed = 0.0
-        self._stall_vel = 0.05
-        self._startup_dist = 0.30
+        self._stall_vel = abs(float(gcfg.get("stall_velocity_rad_s", 0.05)))
+        self._startup_dist = abs(float(gcfg.get("startup_distance_rad", 0.30)))
         self._state_lock = threading.Lock()
         self._state = self._STATE_IDLE
-        self._target_pos = 0.0
-        self._start_pos = 0.0
-        self._contact_pos = 0.0
+        self._target_pos = self._closed_position
+        self._start_pos = self._closed_position
+        self._contact_pos = self._closed_position
         self._hold_torque = self._default_force
         self._position_reached = True
         self._grasp_result: Optional[bool] = None
         self._last_gripper_state: Optional[tuple[float, float, float]] = None
         self._backend = backend
         if backend == "rars01":
-            self._gripper_pivot = np.asarray(
-                gcfg.get("pivot_End_link_m", [-0.130, -0.0255, 0.0]), dtype=np.float64
+            self._gripper_geometry = RarsGripperGeometry(
+                linkage_radius_m=gcfg.get("linkage_radius_m", 0.0375),
+                connecting_rod_length_m=gcfg.get("connecting_rod_length_m", 0.040),
+                carriage_width_m=gcfg.get("carriage_width_m", 0.030),
+                maximum_width_m=self.MAX_DISTANCE_M,
+                jaw_center_End_link_m=gcfg.get("jaw_center_End_link_m", [-0.040, 0.0, 0.0]),
+                jaw_depth_m=gcfg.get("jaw_depth_m", 0.080),
+                jaw_height_m=gcfg.get("jaw_height_m", 0.046),
+                R_grasp_End_link=gcfg.get("R_grasp_End_link", np.eye(3)),
+                motor_angle_limit_rad=abs(self._angle_open),
             )
-            self._moving_inner_tip = np.asarray(
-                gcfg.get("moving_inner_tip_m", [0.130, 0.0255, -0.0055]), dtype=np.float64
-            )
-            self._fixed_inner_tip = np.asarray(
-                gcfg.get("fixed_inner_tip_End_link_m", [0.0, 0.0, -0.0055]), dtype=np.float64
-            )
-            self._R_grasp_tcp = np.asarray(
-                gcfg.get(
-                    "R_grasp_End_link",
-                    [[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]],
-                ),
-                dtype=np.float64,
-            ).reshape(3, 3)
-            geometric_max = self._rars_opening_at_angle(abs(self._angle_open))[0]
-            self.MAX_DISTANCE_M = min(self.MAX_DISTANCE_M, geometric_max)
+            self.MAX_DISTANCE_M = self._gripper_geometry.maximum_width_m
 
-    def start(self) -> None:
-        """Start the SDK arm controller and let this driver own the gripper."""
+    def start(self, passive_gripper: bool = False) -> None:
+        """Start the SDK arm controller and let this driver own the gripper.
+
+        ``passive_gripper`` is only for a calibration session: motor 7 receives
+        zero gains until an explicit opening command is requested.
+        """
         if getattr(self._controller, "_running", False):
             return
 
@@ -672,6 +694,14 @@ class GraspDriver:
         self._gripper_group.enable()
         self._prime_arm_target()
         self._prime_gripper_state()
+        if passive_gripper:
+            state = self._wait_gripper_state()
+            self._gripper_group.send_mit(
+                np.array([state[0]], dtype=np.float64),
+                kp=np.zeros(1, dtype=np.float64),
+                kd=np.zeros(1, dtype=np.float64),
+                tau=np.zeros(1, dtype=np.float64),
+            )
         self._arm.start_control_loop(self._loop_cb)
         self._controller._running = True
 
@@ -682,6 +712,138 @@ class GraspDriver:
     def _ensure_running(self) -> None:
         if not getattr(self._controller, "_running", False):
             raise RuntimeError("GraspDriver is not started; call grasp_driver.start() first")
+
+    def move_rars_calibration_pose(
+        self,
+        x: float,
+        y: float,
+        z: float,
+        roll: float,
+        pitch: float,
+        yaw: float,
+        minimum_duration_s: float,
+    ) -> Optional[float]:
+        """Move RARS01 safely to a Cartesian calibration pose.
+
+        The target is solved as a Cartesian pose, but the executed path is a
+        bounded joint-space minimum-jerk trajectory.  This avoids accepting
+        unconverged intermediate CLIK points from the generic reBot planner.
+        Returns the actual trajectory duration, or ``None`` when no safe IK
+        target exists.  Only the RARS01 calibration script uses this method.
+        """
+        if self._backend != "rars01":
+            raise RuntimeError("move_rars_calibration_pose is only available for RARS01")
+        self._ensure_running()
+        if self._controller._arm_control_mode != "posvel":
+            raise RuntimeError("RARS01 calibration requires POS_VEL arm control")
+        if minimum_duration_s <= 0.0:
+            raise ValueError("minimum_duration_s must be positive")
+
+        from reBotArm_control_py.kinematics.inverse_kinematics import (
+            pos_rot_to_se3,
+            solve_ik,
+        )
+
+        q_all, _, _ = self._arm.get_state()
+        q_start = np.asarray(q_all[:self._n], dtype=np.float64)
+        q_start_model = self._pad_q_for_model(self._model, q_start, self._n)
+        target = pos_rot_to_se3(
+            np.array([x, y, z], dtype=np.float64),
+            roll=roll, pitch=pitch, yaw=yaw,
+        )
+        ik_result = solve_ik(
+            self._model, self._model.createData(), self._controller._end_frame_id,
+            target, q_start_model, self._controller._ik_solver_params,
+            controlled_joints=self._n,
+        )
+        if not ik_result.success:
+            print(f"[RARS01/Calib] IK unavailable, err={ik_result.error:.4f}")
+            return None
+
+        q_end = np.asarray(ik_result.q[:self._n], dtype=np.float64)
+        lower = self._model.lowerPositionLimit[:self._n]
+        upper = self._model.upperPositionLimit[:self._n]
+        if (not np.all(np.isfinite(q_end)) or np.any(q_end < lower) or np.any(q_end > upper)):
+            print("[RARS01/Calib] IK target is outside joint limits, skipping")
+            return None
+
+        return self._start_rars_joint_motion(q_start, q_end, minimum_duration_s)
+
+    def move_rars_joint_target(
+        self,
+        target_joints: np.ndarray,
+        minimum_duration_s: float,
+    ) -> float:
+        """Execute a previously validated RARS01 IK result without solving IK again."""
+        if self._backend != "rars01":
+            raise RuntimeError("move_rars_joint_target is only available for RARS01")
+        self._ensure_running()
+        if self._controller._arm_control_mode != "posvel":
+            raise RuntimeError("RARS01 joint motion requires POS_VEL arm control")
+        q_start = np.asarray(self._arm.get_state()[0][:self._n], dtype=np.float64)
+        q_end = np.asarray(target_joints, dtype=np.float64).reshape(self._n)
+        return self._start_rars_joint_motion(q_start, q_end, minimum_duration_s)
+
+    def home_rars(self, minimum_duration_s: float, timeout_s: float) -> bool:
+        """Return RARS01 to configured zero/home before motors are disabled."""
+        if self._backend != "rars01":
+            raise RuntimeError("home_rars is only available for RARS01")
+        self._ensure_running()
+        if timeout_s <= 0.0:
+            raise ValueError("timeout_s must be positive")
+
+        q_start = np.asarray(self._arm.get_state()[0][:self._n], dtype=np.float64)
+        q_home = np.zeros(self._n, dtype=np.float64)
+        duration = self._start_rars_joint_motion(q_start, q_home, minimum_duration_s)
+        deadline = time.monotonic() + duration + timeout_s
+        while time.monotonic() < deadline:
+            q_now = self._arm.get_state()[0][:self._n]
+            if np.max(np.abs(q_now - q_home)) <= 0.02:
+                return True
+            time.sleep(0.05)
+        return False
+
+    def _start_rars_joint_motion(
+        self,
+        q_start: np.ndarray,
+        q_end: np.ndarray,
+        minimum_duration_s: float,
+    ) -> float:
+        """Queue a limit-checked minimum-jerk RARS01 joint trajectory."""
+        q_start = np.asarray(q_start, dtype=np.float64).reshape(self._n)
+        q_end = np.asarray(q_end, dtype=np.float64).reshape(self._n)
+        if minimum_duration_s <= 0.0:
+            raise ValueError("minimum_duration_s must be positive")
+        lower = self._model.lowerPositionLimit[:self._n]
+        upper = self._model.upperPositionLimit[:self._n]
+        if (not np.all(np.isfinite(q_end)) or np.any(q_end < lower) or np.any(q_end > upper)):
+            raise ValueError("RARS01 joint target is outside joint limits")
+
+        velocity_limits = np.asarray(
+            self._arm.position_velocity_limits_rad_s, dtype=np.float64
+        )[:self._n]
+        # A minimum-jerk profile peaks at 1.875 * delta / duration.  Reserve
+        # 20% below the STM32 POS_VEL cap for scheduling jitter and settling.
+        required_duration = float(np.max(1.875 * np.abs(q_end - q_start) / (0.8 * velocity_limits)))
+        duration = max(float(minimum_duration_s), required_duration)
+        sample_count = max(2, int(np.ceil(duration / self._controller._dt)) + 1)
+        phase = np.linspace(0.0, 1.0, sample_count)
+        blend = 10.0 * phase**3 - 15.0 * phase**4 + 6.0 * phase**5
+        points = [q_start + factor * (q_end - q_start) for factor in blend]
+
+        # The generic controller owns command streaming; replace only its
+        # precomputed point list after every point has passed our limit check.
+        self._controller._stop_send.set()
+        if self._controller._send_thread is not None:
+            self._controller._send_thread.join(timeout=5.0)
+        self._controller._traj = points
+        self._controller._moving = True
+        self._controller._stop_send.clear()
+        self._controller._send_thread = threading.Thread(
+            target=self._controller._send_loop, args=(duration,), daemon=True,
+        )
+        self._controller._send_thread.start()
+        return duration
 
     def _send_gripper_mit(
         self,
@@ -745,15 +907,30 @@ class GraspDriver:
             raise RuntimeError("Gripper feedback is not ready")
         return state
 
+    def motor_position_for_width(self, distance_m: float) -> float:
+        """Return the absolute motor target for an inner-jaw width."""
+        d = float(np.clip(distance_m, 0.0, self.MAX_DISTANCE_M))
+        if self._backend == "rars01":
+            relative_angle = self._gripper_geometry.motor_angle_for_width(d)
+            target = self._closed_position + self._open_sign * relative_angle
+            lower = getattr(self._arm, "_joint_lower", None)
+            upper = getattr(self._arm, "_joint_upper", None)
+            if lower is not None and upper is not None:
+                if target < float(lower[6]) or target > float(upper[6]):
+                    raise RuntimeError(
+                        f"Gripper target {target:+.4f} rad is outside motor 7 limits "
+                        f"[{float(lower[6]):+.4f}, {float(upper[6]):+.4f}]. "
+                        "Check closed_position_rad and counterclockwise."
+                    )
+            return target
+        return self._closed_position + (d / self.MAX_DISTANCE_M) * self._angle_open
+
     def grasp_tcp_transform(self, width_m: float) -> np.ndarray:
         """Return grasp-center -> TCP transform for the current gripper."""
         T = np.eye(4, dtype=np.float64)
         if self._backend != "rars01":
             return T
-        _, center = self._rars_geometry_for_width(width_m)
-        T[:3, :3] = self._R_grasp_tcp
-        T[:3, 3] = center
-        return T
+        return self._gripper_geometry.solve_opening(width_m).T_grasp_End_link
 
     def minimum_jaw_height(self, tcp_pose: tuple[float, ...], width_m: float,
                            include_max_open: bool = True) -> float:
@@ -762,40 +939,9 @@ class GraspDriver:
             return float(tcp_pose[2])
         from utils.transforms import pose6d_to_mat4
 
-        _, _, moving = self._rars_geometry_for_width(width_m, return_moving=True)
-        points = [self._fixed_inner_tip, moving]
-        if include_max_open:
-            points.append(self._rars_opening_at_angle(abs(self._angle_open))[2])
+        points = self._gripper_geometry.jaw_collision_points(width_m, include_max_open)
         T = pose6d_to_mat4(*tcp_pose)
         return min(float((T @ np.r_[point, 1.0])[2]) for point in points)
-
-    def _rars_geometry_for_width(
-        self, width_m: float, return_moving: bool = False
-    ) -> tuple[Any, ...]:
-        width = float(np.clip(width_m, 0.0, self.MAX_DISTANCE_M))
-        lo, hi = 0.0, abs(self._angle_open)
-        for _ in range(60):
-            mid = 0.5 * (lo + hi)
-            if self._rars_opening_at_angle(mid)[0] < width:
-                lo = mid
-            else:
-                hi = mid
-        angle = 0.5 * (lo + hi)
-        _, center, moving = self._rars_opening_at_angle(angle)
-        return (angle, center, moving) if return_moving else (angle, center)
-
-    def _rars_opening_at_angle(
-        self, angle_rad: float
-    ) -> tuple[float, np.ndarray, np.ndarray]:
-        c, s = np.cos(float(angle_rad)), np.sin(float(angle_rad))
-        rotation = np.array(
-            [[c, 0.0, -s], [0.0, 1.0, 0.0], [s, 0.0, c]],
-            dtype=np.float64,
-        )
-        moving = self._gripper_pivot + rotation @ self._moving_inner_tip
-        center = 0.5 * (self._fixed_inner_tip + moving)
-        width = float(moving[2] - self._fixed_inner_tip[2])
-        return width, center, moving
 
     def _set_position_target(self, target: float) -> None:
         with self._state_lock:
@@ -833,26 +979,32 @@ class GraspDriver:
                     self._position_reached = True
 
             elif state == self._STATE_CLOSING:
-                command = (0.0, 0.0, 0.0, self._kd_close, self._close_torque)
+                command = (self._closed_position, 0.0, 0.0, self._kd_close, self._close_torque)
                 if pos_vel_torq is not None:
                     pos, vel, _ = pos_vel_torq
                     self._contact_pos = pos
                     moved = abs(pos - self._start_pos) >= self._startup_dist
-                    at_hard_stop = self._open_sign * pos < self._open_sign * self._hard_stop_angle
+                    at_hard_stop = (
+                        self._open_sign * (pos - self._closed_position) < self._hard_stop_offset
+                    )
                     if moved and at_hard_stop:
-                        self._target_pos = 0.0
+                        self._target_pos = self._closed_position
                         self._state = self._STATE_POSITION
                         self._position_reached = False
                         self._grasp_result = False
-                        command = (0.0, 0.0, self._kp_move, self._kd_move, 0.0)
+                        command = (
+                            self._closed_position, 0.0, self._kp_move, self._kd_move, 0.0
+                        )
                     elif moved and abs(vel) < self._stall_vel:
                         self._target_pos = pos
                         self._state = self._STATE_HOLDING
                         self._hold_ramp_elapsed = 0.0
                         self._grasp_result = True
-                        # Keep the contact command during this first tick;
-                        # Kp and holding torque are blended in below.
-                        command = (pos, 0.0, 0.0, self._kd_close, self._close_torque)
+                        if self._hold_ramp_s <= 0.0:
+                            # Same contact-to-hold transition as the original driver.
+                            command = (pos, 0.0, self._kp_hold, self._kd_hold, self._hold_torque)
+                        else:
+                            command = (pos, 0.0, 0.0, self._kd_close, self._close_torque)
 
             elif state == self._STATE_HOLDING:
                 self._hold_ramp_elapsed += max(0.0, float(dt))
@@ -861,8 +1013,8 @@ class GraspDriver:
                     if self._hold_ramp_s <= 0.0
                     else min(1.0, self._hold_ramp_elapsed / self._hold_ramp_s)
                 )
-                kp = alpha * self._kp_move
-                kd = self._kd_close + alpha * (self._kd_move - self._kd_close)
+                kp = alpha * self._kp_hold
+                kd = self._kd_close + alpha * (self._kd_hold - self._kd_close)
                 tau = self._close_torque + alpha * (self._hold_torque - self._close_torque)
                 command = (self._target_pos, 0.0, kp, kd, tau)
 
@@ -874,8 +1026,7 @@ class GraspDriver:
         self._ensure_running()
         if distance_m is None:
             distance_m = self.MAX_DISTANCE_M
-        d = float(np.clip(distance_m, 0.0, self.MAX_DISTANCE_M))
-        raw_target = (d / self.MAX_DISTANCE_M) * self._angle_open
+        raw_target = self.motor_position_for_width(distance_m)
         target = float(np.clip(raw_target, self._open_lo, self._open_hi))
 
         self._set_position_target(target)
@@ -890,7 +1041,7 @@ class GraspDriver:
         with self._state_lock:
             self._start_pos = start_pos
             self._contact_pos = start_pos
-            self._target_pos = 0.0
+            self._target_pos = self._closed_position
             self._hold_torque = hold_torque
             self._state = self._STATE_CLOSING
             self._position_reached = False
@@ -910,7 +1061,7 @@ class GraspDriver:
     def release_gripper(self, timeout: float = 4.0) -> None:
         self._ensure_running()
         self.open_gripper(timeout=min(2.0, timeout))
-        self._set_position_target(0.0)
+        self._set_position_target(self._closed_position)
         self._wait_until(self._position_done, timeout)
 
     def get_tcp_pose(self) -> np.ndarray:

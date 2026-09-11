@@ -127,9 +127,7 @@ def _execute_place_sequence(
 
     def _close_gripper():
         time.sleep(0.8)
-        d = 0.0
-        raw_target = (d / grasp_driver.MAX_DISTANCE_M) * grasp_driver._angle_open
-        target = float(np.clip(raw_target, grasp_driver._open_lo, grasp_driver._open_hi))
+        target = grasp_driver.motor_position_for_width(0.0)
         with grasp_driver._state_lock:
             grasp_driver._target_pos = target
             grasp_driver._state = grasp_driver._STATE_POSITION

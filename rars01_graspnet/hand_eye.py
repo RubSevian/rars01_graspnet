@@ -6,6 +6,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from rars01_graspnet.hand_eye_solver import solve_eye_in_hand
+
 
 METHODS = {
     "TSAI": cv2.CALIB_HAND_EYE_TSAI,
@@ -58,14 +60,17 @@ def solve(T_tcp_base: list[np.ndarray], T_marker_camera: list[np.ndarray], metho
     if requested_method not in METHODS:
         raise ValueError(f"Unknown hand-eye method: {method}")
 
-    rotation, translation = cv2.calibrateHandEye(
-        rotations_tcp_base, translations_tcp_base,
-        rotations_marker_camera, translations_marker_camera,
-        method=METHODS[requested_method],
-    )
-    result = np.eye(4, dtype=np.float64)
-    result[:3, :3] = rotation
-    result[:3, 3] = translation.reshape(3)
+    if hasattr(cv2, "calibrateHandEye"):
+        rotation, translation = cv2.calibrateHandEye(
+            rotations_tcp_base, translations_tcp_base,
+            rotations_marker_camera, translations_marker_camera,
+            method=METHODS[requested_method],
+        )
+        result = np.eye(4, dtype=np.float64)
+        result[:3, :3] = rotation
+        result[:3, 3] = translation.reshape(3)
+    else:
+        result = solve_eye_in_hand(T_tcp_base, T_marker_camera)
 
     # A stationary marker must have the same pose in base for every sample.
     marker_base = [a @ result @ b for a, b in zip(T_tcp_base, T_marker_camera)]

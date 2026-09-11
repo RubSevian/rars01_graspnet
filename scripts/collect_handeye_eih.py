@@ -112,7 +112,7 @@ CALIB_POSES_XYZ = [
     (0.30, -0.05, 0.32, -0.75, 0.42, -0.65),
 ]
 
-AUTO_MOVE_DURATION_S = 3.0
+DEFAULT_AUTO_MOVE_DURATION_S = 3.0
 AUTO_SETTLE_EXTRA_S = 0.6
 AUTO_MARKER_TIMEOUT_S = 2.5
 AUTO_MARKER_STABLE_FRAMES = 4
@@ -317,6 +317,18 @@ def main():
     aruco_cfg  = cfg["calibration"]["aruco"]
     he_method  = cfg["calibration"].get("hand_eye_method", "TSAI")
     save_path  = calib_dir / "hand_eye.npz"
+    samples_path = calib_dir / "hand_eye_samples.npz"
+    auto_move_duration_s = float(
+        cfg["calibration"].get("auto", {}).get(
+            "move_duration_s", DEFAULT_AUTO_MOVE_DURATION_S
+        )
+    )
+    if auto_move_duration_s <= 0.0:
+        raise ValueError("calibration.auto.move_duration_s must be positive")
+    auto_home_duration_s = float(cfg["calibration"].get("auto", {}).get("home_duration_s", 4.0))
+    auto_home_timeout_s = float(cfg["calibration"].get("auto", {}).get("home_timeout_s", 8.0))
+    if auto_home_duration_s <= 0.0 or auto_home_timeout_s <= 0.0:
+        raise ValueError("calibration.auto.home_duration_s and home_timeout_s must be positive")
 
     # Camera.
     cam = make_camera(cfg)
@@ -396,8 +408,11 @@ def main():
             print("[Robot] Manual mode ready. Move the arm by hand, then press Enter to capture.")
         else:
             if robot_backend == "rars01":
-                auto_controller_mode = "mit"
-                mode_name = "mit (RARS transport)"
+                # RARS01 arm joints use the hardware POS_VEL mode: the STM32
+                # receives a position target plus the configured velocity cap.
+                # Motor 7 remains MIT and is not moved during calibration.
+                auto_controller_mode = "posvel"
+                mode_name = "pos_vel (RARS position + velocity limit)"
             else:
                 selected = selected_arm_config(robot_cfg.get("repo_root"))
                 auto_controller_mode = selected.controller_mode
@@ -489,6 +504,15 @@ def main():
                 print("[Result] Existing hand_eye.npz was not updated")
             return False
 
+        # Preserve the collected measurements even if a solver or installation
+        # issue occurs.  The result file is intentionally left untouched until
+        # a complete new calibration has been computed.
+        samples_path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez(
+            samples_path,
+            T_gripper2base=np.asarray([s.T_gripper2base for s in calibrator._samples]),
+            T_marker2cam=np.asarray([s.T_marker2cam for s in calibrator._samples]),
+        )
         print(f"[Result] Solving with {calibrator.n_samples} samples...")
         try:
             result = calibrator.calibrate(min_samples=MIN_CALIB_SAMPLES)
@@ -516,18 +540,30 @@ def main():
             x, y, z, roll, pitch, yaw = CALIB_POSES_XYZ[idx]
             print(f"\n[Auto] Pose {idx+1}/{total}: "
                   f"pos=({x:.2f},{y:.2f},{z:.2f}) rpy=({roll:.2f},{pitch:.2f},{yaw:.2f})")
-            ok = controller.move_to_traj(x, y, z, roll=roll, pitch=pitch, yaw=yaw, duration=AUTO_MOVE_DURATION_S)
-            if ok:
+            if robot_backend == "rars01":
+                planned_duration_s = grasp_driver.move_rars_calibration_pose(
+                    x, y, z, roll, pitch, yaw, auto_move_duration_s,
+                )
+            else:
+                planned_duration_s = (
+                    auto_move_duration_s
+                    if controller.move_to_traj(
+                        x, y, z, roll=roll, pitch=pitch, yaw=yaw,
+                        duration=auto_move_duration_s,
+                    )
+                    else None
+                )
+            if planned_duration_s is not None:
                 now = time.monotonic()
                 auto["pose_idx"] = idx
                 auto["phase"] = "settling"
-                auto["settle_until"] = now + AUTO_MOVE_DURATION_S + AUTO_SETTLE_EXTRA_S
+                auto["settle_until"] = now + planned_duration_s + AUTO_SETTLE_EXTRA_S
                 auto["timeout_at"] = auto["settle_until"] + AUTO_MARKER_TIMEOUT_S
                 auto["stable_frames"] = 0
                 auto["status"] = f"pose {idx+1}/{total} moving"
                 return False
 
-            print(f"[Auto] Pose {idx+1}/{total} has no IK solution, skipping")
+            print(f"[Auto] Pose {idx+1}/{total} has no safe IK solution, skipping")
             auto["idx"] += 1
 
         auto["phase"] = "done"
@@ -583,24 +619,27 @@ def main():
         return False
 
     def safe_home_and_disconnect() -> None:
-        """Stop active control, return home with a fresh SDK controller, then disconnect."""
+        """Return home first, then stop control and disconnect."""
         if rebotarm is None or auto_controller_mode is None:
             return
         try:
             print("[Robot] Homing and disconnecting...")
-            rebotarm.stop_control_loop()
-            q_now = rebotarm.get_state()[0][: rebotarm.arm.num_joints]
-            g_now = rebotarm.gripper.get_positions() if rebotarm.has_gripper else np.array([])
-
-            ctrl = RebotArmEndPose(
-                rebotarm,
-                arm_control_mode=auto_controller_mode,
-                use_gravity_ff=auto_use_gravity_ff,
-            )
-            ctrl.set_gripper_target(float(g_now[0]) if g_now.size else 0.0)
-            ctrl._q_target[:] = q_now
-            ctrl.start()
-            ctrl.safe_home()
+            if robot_backend == "rars01" and grasp_driver is not None:
+                if not grasp_driver.home_rars(auto_home_duration_s, auto_home_timeout_s):
+                    raise RuntimeError("RARS01 did not reach home before timeout")
+            else:
+                rebotarm.stop_control_loop()
+                q_now = rebotarm.get_state()[0][: rebotarm.arm.num_joints]
+                g_now = rebotarm.gripper.get_positions() if rebotarm.has_gripper else np.array([])
+                ctrl = RebotArmEndPose(
+                    rebotarm,
+                    arm_control_mode=auto_controller_mode,
+                    use_gravity_ff=auto_use_gravity_ff,
+                )
+                ctrl.set_gripper_target(float(g_now[0]) if g_now.size else 0.0)
+                ctrl._q_target[:] = q_now
+                ctrl.start()
+                ctrl.safe_home()
             rebotarm.stop_control_loop()
         except Exception as e:
             print(f"[Robot] Homing failed: {e}")

@@ -288,11 +288,10 @@ def graspnet_rotation_to_rebot_tcp_rotation(grasp_rotation: np.ndarray) -> np.nd
 
 
 def graspnet_rotation_to_rars_tcp_rotation(grasp_rotation: np.ndarray) -> np.ndarray:
-    """Map GraspNet axes to RARS End_link: X=approach, Z=jaw opening."""
+    """Map GraspNet axes to parallel RARS End_link: X=approach, Y=opening."""
     R = np.asarray(grasp_rotation, dtype=np.float64)
     if R.shape != (3, 3):
         raise ValueError(f"grasp_rotation must be (3, 3), got {R.shape}")
-    grasp_z = np.cross(R[:, 0], R[:, 1])
     return _nearest_rotation_matrix(
-        np.column_stack([R[:, 0], -grasp_z, R[:, 1]])
+        np.column_stack([R[:, 0], R[:, 1], np.cross(R[:, 0], R[:, 1])])
     )

@@ -11,7 +11,18 @@ def test_jetson_config_inherits_robot_and_overrides_memory_profile():
     config = load_config(root / "config" / "jetson_orin_nano.yaml")
 
     assert config["robot"]["rars01"]["command_rate_hz"] == 100.0
-    assert config["robot"]["rars01"]["max_grasp_width_m"] == 0.09
+    assert config["robot"]["rars01"]["max_grasp_width_m"] == 0.100
+    assert config["robot"]["rars01"]["max_grasp_depth_m"] == 0.080
+    assert config["robot"]["gripper"]["rars01"]["linkage_radius_m"] == 0.0375
+    assert config["robot"]["gripper"]["rars01"]["connecting_rod_length_m"] == 0.040
+    assert config["robot"]["gripper"]["rars01"]["default_force"] == 2.20
+    assert config["robot"]["gripper"]["rars01"]["move_kp"] == 20.0
+    assert config["robot"]["gripper"]["rars01"]["closed_position_rad"] == 0.0
+    assert config["grasp_pipeline"]["grasp"]["insertion_depth_m"] == 0.015
+    assert config["grasp_pipeline"]["grasp"]["position_compensation_base_m"] == {
+        "x": 0.0, "y": 0.0, "z": 0.0,
+    }
+    assert config["grasp_pipeline"]["grasp"]["ik_retry_count"] == 3
     assert config["yolo"]["model_name"] == "yoloe-26s-seg.pt"
     assert config["graspnet"]["num_point"] == 10000
     assert config["graspnet"]["top_k"] == 20

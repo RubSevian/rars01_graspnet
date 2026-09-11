@@ -9,6 +9,8 @@ from typing import List, Union
 import cv2
 import numpy as np
 
+from rars01_graspnet.hand_eye_solver import solve_eye_in_hand
+
 
 class CalibMode(Enum):
     EYE_IN_HAND = "eye_in_hand"   # 相机在末端，随末端运动
@@ -109,12 +111,18 @@ class HandEyeCalibrator:
         R_t2c = [s.T_marker2cam[:3, :3] for s in self._samples]
         t_t2c = [s.T_marker2cam[:3,  3].reshape(3, 1) for s in self._samples]
 
-        R_c2g, t_c2g = cv2.calibrateHandEye(
-            R_g2b, t_g2b, R_t2c, t_t2c, method=cv_method
-        )
-        T = np.eye(4, dtype=np.float64)
-        T[:3, :3] = R_c2g
-        T[:3,  3] = t_c2g.flatten()
+        if hasattr(cv2, "calibrateHandEye"):
+            R_c2g, t_c2g = cv2.calibrateHandEye(
+                R_g2b, t_g2b, R_t2c, t_t2c, method=cv_method
+            )
+            T = np.eye(4, dtype=np.float64)
+            T[:3, :3] = R_c2g
+            T[:3,  3] = t_c2g.flatten()
+        else:
+            T = solve_eye_in_hand(
+                [s.T_gripper2base for s in self._samples],
+                [s.T_marker2cam for s in self._samples],
+            )
 
         return CalibResult(
             T_result=T,

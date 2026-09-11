@@ -1,0 +1,2 @@
+# Stable name for the RARS01 STM32 USB CDC interface (VID:PID 0483:5740).
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="5740", MODE="0660", GROUP="dialout", SYMLINK+="rars01_stm32"

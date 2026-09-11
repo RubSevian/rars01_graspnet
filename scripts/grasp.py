@@ -17,6 +17,7 @@ import argparse
 import os
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
@@ -62,6 +63,7 @@ from drivers.robot.grasp_driver import (  # noqa: E402
     selected_arm_config,
 )
 import utils.graspnet_utils as graspnet_utils  # noqa: E402
+from utils.graspnet_worker import GraspNetWorker  # noqa: E402
 from utils.camera_utils import compose_cam_to_base_transform, configure_camera, load_config, load_hand_eye  # noqa: E402
 from utils.ordinary_grasp import (  # noqa: E402
     GraspPose,
@@ -118,8 +120,26 @@ def _move_ready(controller: Any, ready_cfg: dict[str, Any]) -> None:
     _wait_motion(controller, duration)
 
 
+@dataclass(frozen=True)
+class IkSolution:
+    success: bool
+    error: float
+    joints: np.ndarray
+
+
+@dataclass(frozen=True)
+class ExecutableGrasp:
+    grasp: Grasp
+    grasp6d: tuple[float, ...]
+    pregrasp6d: tuple[float, ...]
+    retreat6d: tuple[float, ...]
+    pregrasp_joints: np.ndarray
+    grasp_joints: np.ndarray
+    retreat_joints: np.ndarray
+
+
 class IkChecker:
-    def __init__(self, arm: Any) -> None:
+    def __init__(self, arm: Any, retry_count: int = 3) -> None:
         from reBotArm_control_py.kinematics import (
             get_end_effector_frame_id,
             load_robot_model,
@@ -139,26 +159,64 @@ class IkChecker:
         self._solve_ik = solve_ik
         load_arm_model = getattr(arm, "load_kinematic_model", None)
         self._model = load_arm_model() if load_arm_model is not None else load_robot_model()
-        self._data = self._model.createData()
         self._end_frame_id = get_end_effector_frame_id(self._model)
         self._params = IKParams(max_iter=200, tolerance=1e-4, step_size=0.5, damping=1e-6)
+        self._retry_count = max(0, int(retry_count))
+        self._lower = np.asarray(self._model.lowerPositionLimit[:self._n], dtype=np.float64)
+        self._upper = np.asarray(self._model.upperPositionLimit[:self._n], dtype=np.float64)
 
-    def check(self, x: float, y: float, z: float, roll: float, pitch: float, yaw: float) -> tuple[bool, float]:
-        q_now = self._arm.get_state(request_feedback=False)[0][: self._n]
-        q_init = self._pad_q_for_model(self._model, q_now, self._n)
+    def current_joints(self) -> np.ndarray:
+        return np.asarray(
+            self._arm.get_state(request_feedback=False)[0][:self._n], dtype=np.float64
+        ).copy()
+
+    def solve(
+        self,
+        x: float,
+        y: float,
+        z: float,
+        roll: float,
+        pitch: float,
+        yaw: float,
+        reference_joints: Optional[np.ndarray] = None,
+    ) -> IkSolution:
+        reference = (
+            self.current_joints()
+            if reference_joints is None
+            else np.asarray(reference_joints, dtype=np.float64).reshape(self._n)
+        )
         target = self._pos_rot_to_se3(
             np.array([x, y, z], dtype=np.float64), roll=roll, pitch=pitch, yaw=yaw
         )
-        result = self._solve_ik(
-            self._model,
-            self._data,
-            self._end_frame_id,
-            target,
-            q_init,
-            self._params,
-            controlled_joints=self._n,
+        midpoint = 0.5 * (self._lower + self._upper)
+        seeds = [reference]
+        for fraction in (0.25, 0.50, 0.75)[:self._retry_count]:
+            seeds.append((1.0 - fraction) * reference + fraction * midpoint)
+
+        best_result = None
+        for seed in seeds:
+            result = self._solve_ik(
+                self._model,
+                self._model.createData(),
+                self._end_frame_id,
+                target,
+                self._pad_q_for_model(self._model, seed, self._n),
+                self._params,
+                controlled_joints=self._n,
+            )
+            if best_result is None or float(result.error) < float(best_result.error):
+                best_result = result
+            if result.success:
+                q = np.asarray(result.q[:self._n], dtype=np.float64)
+                # Seeds are ordered from the previous chain point toward the
+                # joint-range midpoint, so the first success is the most local.
+                return IkSolution(True, float(result.error), q.copy())
+        assert best_result is not None
+        return IkSolution(
+            False,
+            float(best_result.error),
+            np.asarray(best_result.q[:self._n], dtype=np.float64).copy(),
         )
-        return bool(result.success), float(result.error)
 
 def _execute_grasp(
     controller: Any,
@@ -169,6 +227,7 @@ def _execute_grasp(
     ready_cfg: dict[str, Any],
     motion_cfg: dict[str, Any],
     dry_run: bool,
+    joint_targets: Optional[tuple[np.ndarray, np.ndarray, np.ndarray]] = None,
 ) -> bool:
     xg, yg, zg, rxg, ryg, rzg = grasp6d
     xp, yp, zp, rxp, ryp, rzp = pre6d
@@ -185,32 +244,46 @@ def _execute_grasp(
     print("[Grasp] Open gripper")
     grasp_driver.open_gripper()
 
+    pregrasp_duration = float(motion_cfg.get("pregrasp_duration_s", 2.0))
+    grasp_duration = float(motion_cfg.get("grasp_duration_s", 1.5))
+    retreat_duration = float(motion_cfg.get("retreat_duration_s", 1.5))
+
     print("[Grasp] Move to pregrasp")
-    if not controller.move_to_traj(xp, yp, zp, rxp, ryp, rzp, duration=2.0):
-        print("[Grasp] Pregrasp IK failed")
-        return False
-    _wait_motion(controller, 2.0)
+    if joint_targets is not None:
+        duration = grasp_driver.move_rars_joint_target(joint_targets[0], pregrasp_duration)
+    else:
+        if not controller.move_to_traj(xp, yp, zp, rxp, ryp, rzp, duration=pregrasp_duration):
+            print("[Grasp] Pregrasp IK failed")
+            return False
+        duration = pregrasp_duration
+    _wait_motion(controller, duration)
 
     print("[Grasp] Move to grasp")
-    if not controller.move_to_traj(xg, yg, zg, rxg, ryg, rzg, duration=1.5):
-        print("[Grasp] Grasp IK failed")
-        return False
-    _wait_motion(controller, 1.5)
+    if joint_targets is not None:
+        duration = grasp_driver.move_rars_joint_target(joint_targets[1], grasp_duration)
+    else:
+        if not controller.move_to_traj(xg, yg, zg, rxg, ryg, rzg, duration=grasp_duration):
+            print("[Grasp] Grasp IK failed")
+            return False
+        duration = grasp_duration
+    _wait_motion(controller, duration)
 
     print("[Grasp] Closing")
     ok = grasp_driver.grasp()
     print("[Grasp] Holding object" if ok else "[Grasp] Empty grasp")
-    # The RARS01 has a single moving jaw.  Let the jaw controller transition
-    # from contact torque to position holding before the arm starts lifting.
-    # This prevents the reaction impulse from being mixed with the retreat.
+    # Let the jaw controller transition from contact torque to position
+    # holding before the arm starts lifting.
     grip_settle_s = float(motion_cfg.get("grip_settle_s", 0.35))
     if ok and grip_settle_s > 0.0:
         print(f"[Grasp] Stabilize grip ({grip_settle_s:.2f}s)")
         time.sleep(grip_settle_s)
 
     print("[Grasp] Retreat")
-    if controller.move_to_traj(xr, yr, zr, rxr, ryr, rzr, duration=1.5):
-        _wait_motion(controller, 1.5)
+    if joint_targets is not None:
+        duration = grasp_driver.move_rars_joint_target(joint_targets[2], retreat_duration)
+        _wait_motion(controller, duration)
+    elif controller.move_to_traj(xr, yr, zr, rxr, ryr, rzr, duration=retreat_duration):
+        _wait_motion(controller, retreat_duration)
 
     print("[Grasp] Return ready")
     _move_ready(controller, ready_cfg)
@@ -332,6 +405,14 @@ def _pose_z_ok(pose6d: tuple[float, ...], min_z: float) -> bool:
     return float(pose6d[2]) >= float(min_z)
 
 
+def _translate_pose(
+    pose6d: tuple[float, ...], offset_base_m: np.ndarray
+) -> tuple[float, ...]:
+    pose = np.asarray(pose6d, dtype=np.float64).copy()
+    pose[:3] += np.asarray(offset_base_m, dtype=np.float64).reshape(3)
+    return tuple(float(value) for value in pose)
+
+
 def _select_executable_grasp(
     ik_checker: IkChecker,
     grasp_driver: GraspDriver,
@@ -340,16 +421,20 @@ def _select_executable_grasp(
     pregrasp_offset_m: float,
     retreat_offset_m: float,
     insertion_depth_m: float,
+    max_grasp_depth_m: float,
     min_base_z_m: float,
     min_jaw_z_m: float,
     robot_backend: str,
     allow_parallel_flip: bool,
     apply_nms: bool,
     prefer_current_orientation: bool,
-) -> Optional[tuple[Grasp, tuple[float, ...], tuple[float, ...], tuple[float, ...]]]:
+    position_compensation_base_m: np.ndarray,
+    candidate_limit: int,
+) -> Optional[ExecutableGrasp]:
     ranked = _rank_grasps(grasps, apply_nms=apply_nms)
     skipped_low = 0
     skipped_jaw = 0
+    skipped_depth = 0
     skipped_ik = 0
     worst_err = 0.0
 
@@ -358,67 +443,104 @@ def _select_executable_grasp(
         grasp_driver.get_tcp_pose()[:3, :3]
         if prefer_current_orientation else None
     )
-    for idx in range(len(ranked)):
+    for idx in range(min(len(ranked), candidate_limit)):
         grasp = ranked[idx]
-        T_grasp_tcp = grasp_driver.grasp_tcp_transform(float(grasp.width))
-        grasp6d, pre6d, retreat6d = graspnet_utils.grasp_to_base_poses(
-            grasp,
-            T_cam2base,
-            pregrasp_offset_m,
-            retreat_offset_m,
-            insertion_depth_m,
-            tcp_convention=robot_backend,
-            T_grasp_tcp=T_grasp_tcp,
-            allow_parallel_flip=allow_parallel_flip,
+        if float(grasp.depth) > max_grasp_depth_m:
+            skipped_depth += 1
+            continue
+        orientation_candidates = (
+            (grasp, _parallel_flip_grasp(grasp)) if allow_parallel_flip else (grasp,)
         )
-        rotation_cost = 0.0
-        if current_rotation is not None:
-            target_rotation = pose6d_to_mat4(*pre6d)[:3, :3]
-            relative = current_rotation.T @ target_rotation
-            cosine = float(np.clip((np.trace(relative) - 1.0) * 0.5, -1.0, 1.0))
-            rotation_cost = float(np.arccos(cosine))
-        pose_candidates.append(
-            (rotation_cost, idx, grasp, T_grasp_tcp, grasp6d, pre6d, retreat6d)
-        )
+        for branch_index, oriented_grasp in enumerate(orientation_candidates):
+            T_grasp_tcp = grasp_driver.grasp_tcp_transform(float(oriented_grasp.width))
+            grasp6d, pre6d, retreat6d = graspnet_utils.grasp_to_base_poses(
+                oriented_grasp,
+                T_cam2base,
+                pregrasp_offset_m,
+                retreat_offset_m,
+                insertion_depth_m,
+                tcp_convention=robot_backend,
+                T_grasp_tcp=T_grasp_tcp,
+                # Both equivalent parallel-gripper orientations are checked here.
+                allow_parallel_flip=False,
+            )
+            grasp6d = _translate_pose(grasp6d, position_compensation_base_m)
+            pre6d = _translate_pose(pre6d, position_compensation_base_m)
+            retreat6d = _translate_pose(retreat6d, position_compensation_base_m)
+            rotation_cost = 0.0
+            if current_rotation is not None:
+                target_rotation = pose6d_to_mat4(*pre6d)[:3, :3]
+                relative = current_rotation.T @ target_rotation
+                cosine = float(np.clip((np.trace(relative) - 1.0) * 0.5, -1.0, 1.0))
+                rotation_cost = float(np.arccos(cosine))
+            pose_candidates.append(
+                (rotation_cost, idx, branch_index, grasp, T_grasp_tcp, grasp6d, pre6d, retreat6d)
+            )
 
     if prefer_current_orientation:
         pose_candidates.sort(key=lambda item: item[0])
 
+    current_joints = ik_checker.current_joints()
     for exec_idx, candidate in enumerate(pose_candidates):
-        _, original_idx, grasp, T_grasp_tcp, grasp6d, pre6d, retreat6d = candidate
-        if not (_pose_z_ok(pre6d, min_base_z_m) and _pose_z_ok(grasp6d, min_base_z_m)):
+        _, original_idx, branch_index, grasp, T_grasp_tcp, grasp6d, pre6d, retreat6d = candidate
+        if not all(
+            _pose_z_ok(pose, min_base_z_m) for pose in (pre6d, grasp6d, retreat6d)
+        ):
             skipped_low += 1
             continue
-        if (robot_backend == "rars01"
-                and grasp_driver.minimum_jaw_height(grasp6d, float(grasp.width)) < min_jaw_z_m):
+        if (
+            robot_backend == "rars01"
+            and min(
+                grasp_driver.minimum_jaw_height(pose, float(grasp.width))
+                for pose in (pre6d, grasp6d, retreat6d)
+            ) < min_jaw_z_m
+        ):
             skipped_jaw += 1
             continue
 
-        pre_ok, pre_err = ik_checker.check(*pre6d)
-        grasp_ok, grasp_err = ik_checker.check(*grasp6d) if pre_ok else (False, pre_err)
-        worst_err = max(worst_err, pre_err, grasp_err)
-        if pre_ok and grasp_ok:
+        pre = ik_checker.solve(*pre6d, reference_joints=current_joints)
+        grasp_solution = (
+            ik_checker.solve(*grasp6d, reference_joints=pre.joints)
+            if pre.success else IkSolution(False, pre.error, pre.joints)
+        )
+        retreat = (
+            ik_checker.solve(*retreat6d, reference_joints=grasp_solution.joints)
+            if grasp_solution.success
+            else IkSolution(False, grasp_solution.error, grasp_solution.joints)
+        )
+        worst_err = max(worst_err, pre.error, grasp_solution.error, retreat.error)
+        if pre.success and grasp_solution.success and retreat.success:
             print(f"[G] Executable rank={exec_idx + 1}/{len(ranked)} score={grasp.score:.4f}")
             if prefer_current_orientation:
                 print(
                     f"[G] Central-mask orientation branch={original_idx + 1}/2 "
                     f"(minimum wrist rotation first)"
                 )
+            elif allow_parallel_flip:
+                print(f"[G] parallel-gripper orientation branch={branch_index + 1}/2")
             if robot_backend == "rars01":
                 print(
                     "[G] jaw center in End_link [m]: "
                     f"{np.round(T_grasp_tcp[:3, 3], 5).tolist()}"
                 )
-            if skipped_low or skipped_jaw or skipped_ik:
+            if skipped_depth or skipped_low or skipped_jaw or skipped_ik:
                 print(
-                    f"[G] Skipped low_z={skipped_low} jaw_z={skipped_jaw} "
+                    f"[G] Skipped depth={skipped_depth} low_z={skipped_low} jaw_z={skipped_jaw} "
                     f"ik_fail={skipped_ik}"
                 )
-            return grasp, grasp6d, pre6d, retreat6d
+            return ExecutableGrasp(
+                grasp=grasp,
+                grasp6d=grasp6d,
+                pregrasp6d=pre6d,
+                retreat6d=retreat6d,
+                pregrasp_joints=pre.joints,
+                grasp_joints=grasp_solution.joints,
+                retreat_joints=retreat.joints,
+            )
         skipped_ik += 1
 
     print(
-        f"[G] No executable grasp: low_z={skipped_low} jaw_z={skipped_jaw} "
+        f"[G] No executable grasp: depth={skipped_depth} low_z={skipped_low} jaw_z={skipped_jaw} "
         f"ik_fail={skipped_ik} max_err={worst_err:.4f}"
     )
     return None
@@ -475,7 +597,7 @@ def main() -> int:
     robot_cfg = cfg.get("robot", {})
     robot_backend = str(args.robot_backend or robot_cfg.get("backend", "rebot")).lower()
     max_grasp_width_m = (
-        float(robot_cfg.get("rars01", {}).get("max_grasp_width_m", 0.111))
+        float(robot_cfg.get("rars01", {}).get("max_grasp_width_m", 0.100))
         if robot_backend == "rars01" else GRIPPER_MAX_DISTANCE_M
     )
     ready_cfg = robot_cfg.get(
@@ -493,8 +615,20 @@ def main() -> int:
     pregrasp_offset_m = float(args.pregrasp_offset if args.pregrasp_offset is not None else grasp_cfg.get("pregrasp_offset_m", 0.08))
     retreat_offset_m = float(args.retreat_offset if args.retreat_offset is not None else pregrasp_offset_m)
     insertion_depth_m = float(grasp_cfg.get("insertion_depth_m", 0.0))
+    max_grasp_depth_m = float(robot_cfg.get("rars01", {}).get("max_grasp_depth_m", 0.080))
+    if not 0.0 <= insertion_depth_m <= max_grasp_depth_m:
+        raise ValueError("insertion_depth_m must be between 0 and robot.rars01.max_grasp_depth_m")
     min_base_z_m = float(args.min_base_z if args.min_base_z is not None else grasp_cfg.get("min_base_z_m", 0.03))
     min_jaw_z_m = float(grasp_cfg.get("min_jaw_z_m", 0.01))
+    compensation_cfg = grasp_cfg.get("position_compensation_base_m", {})
+    position_compensation_base_m = np.array(
+        [float(compensation_cfg.get(axis, 0.0)) for axis in ("x", "y", "z")],
+        dtype=np.float64,
+    )
+    ik_retry_count = int(grasp_cfg.get("ik_retry_count", 3))
+    ik_candidate_limit = int(grasp_cfg.get("ik_candidate_limit", 20))
+    if ik_candidate_limit <= 0:
+        raise ValueError("grasp_pipeline.grasp.ik_candidate_limit must be positive")
     depth_quantile = float(grasp_cfg.get("depth_quantile", 0.5))
     central_mask_approach = str(
         grasp_cfg.get("central_mask_approach", "camera_ray")
@@ -534,6 +668,7 @@ def main() -> int:
     window_name = f"Main - {grasp_mode} Grasp"
     top_k = int(cfg.get("graspnet", {}).get("top_k", 50))
     vis: Optional[graspnet_utils.Open3DGraspWindow] = None
+    graspnet_worker: Optional[GraspNetWorker] = None
 
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(window_name, int(cam_cfg.get("color_width", 1280)), int(cam_cfg.get("color_height", 720)))
@@ -571,10 +706,9 @@ def main() -> int:
             extra_classes=args.extra_yolo_class,
         )
         last_target_status = "YOLO disabled: full-scene GraspNet" if yolo_model is None else "target detector warming up..."
-        net = (
-            graspnet_utils.build_net(checkpoint_path, args.num_view)
-            if grasp_mode == "graspnet" else None
-        )
+        if grasp_mode == "graspnet":
+            print("[Pipeline] starting isolated GraspNet CUDA worker")
+            graspnet_worker = GraspNetWorker(checkpoint_path, args.num_view)
         print(f"[Pipeline] grasp mode: {grasp_mode}")
 
         print("=== Init robot ===")
@@ -613,7 +747,7 @@ def main() -> int:
         )
         grasp_driver.start()
         robot_ready = True
-        ik_checker = IkChecker(rebotarm)
+        ik_checker = IkChecker(rebotarm, retry_count=ik_retry_count)
         print(f"[Robot] mode: {mode_name}")
         print("[Robot] Move ready")
         _move_ready(controller, ready_cfg)
@@ -676,19 +810,22 @@ def main() -> int:
                 central_best: Optional[GraspPose] = None
                 try:
                     if grasp_mode == "graspnet":
-                        result = graspnet_utils.infer_frame(
-                            net,
-                            snap_color,
-                            snap_depth,
-                            K,
+                        if graspnet_worker is None:
+                            raise RuntimeError("GraspNet worker is unavailable")
+                        # Reuse the latest live YOLO target. Only GraspNet CUDA
+                        # runs in the child process; this process remains free
+                        # to keep the RARS01 command loop alive at 100 Hz.
+                        if yolo_model is not None and selected_target is None:
+                            print("[G] No current YOLO target")
+                            continue
+                        worker_result = graspnet_worker.infer(
+                            snap_color, snap_depth, K,
                             num_point=args.num_point,
                             min_depth=args.min_depth,
                             max_depth=args.max_depth,
                             collision_thresh=args.collision_thresh,
                             voxel_size=args.voxel_size,
-                            yolo_model=yolo_model,
-                            yolo_opts=yolo_opts,
-                            target_class=target_class,
+                            bbox_xyxy=(selected_target.bbox_xyxy if selected_target else None),
                             target_margin_px=int(
                                 args.target_margin_px
                                 if args.target_margin_px is not None
@@ -696,6 +833,34 @@ def main() -> int:
                             ),
                             target_expand_ratio=target_expand_ratio,
                             max_grasp_width_m=max_grasp_width_m,
+                            max_grasp_depth_m=max_grasp_depth_m,
+                            timeout_s=float(graspnet_cfg.get("worker_timeout_s", 30.0)),
+                        )
+                        candidate_grasps = GraspGroup(worker_result["grasps"])
+                        pre_bbox_grasps = GraspGroup(worker_result["pre_bbox_grasps"])
+                        bbox_grasps = GraspGroup(worker_result["bbox_grasps"])
+                        result = graspnet_utils.GraspNetFrameResult(
+                            grasps=candidate_grasps,
+                            pre_bbox_grasps=pre_bbox_grasps,
+                            bbox_grasps=bbox_grasps,
+                            best=graspnet_utils.select_best_grasp(candidate_grasps),
+                            status="",
+                            target_status=last_target_status,
+                            detections=last_detections,
+                            selected_target=selected_target,
+                            o3d_cloud=None,
+                            raw_cloud=np.empty((0, 3), dtype=np.float32),
+                        )
+                        counts = worker_result["counts"]
+                        label = (
+                            f"{selected_target.class_name} {selected_target.conf:.2f}"
+                            if selected_target else "full scene"
+                        )
+                        result.status = (
+                            f"{label} grasps={len(candidate_grasps)}/{len(bbox_grasps)}/"
+                            f"{len(pre_bbox_grasps)} decoded={counts['decoded']} "
+                            f"collide={counts['collision_removed']}/{counts['pre_collision']} "
+                            f"inference={worker_result['elapsed_s']:.2f}s"
                         )
                         status = result.status
                         last_target_status = result.target_status
@@ -798,17 +963,23 @@ def main() -> int:
                     pregrasp_offset_m,
                     retreat_offset_m,
                     insertion_depth_m if grasp_mode == "graspnet" else 0.0,
+                    max_grasp_depth_m,
                     min_base_z_m,
                     min_jaw_z_m,
                     robot_backend,
                     grasp_mode == "graspnet",
                     grasp_mode == "graspnet",
                     grasp_mode == "central_mask",
+                    position_compensation_base_m,
+                    ik_candidate_limit,
                 )
                 if selected is None:
                     print(f"[G] No IK-reachable grasp above min_base_z={min_base_z_m:.3f}m ")
                     continue
-                best, grasp6d, pre6d, retreat6d = selected
+                best = selected.grasp
+                grasp6d = selected.grasp6d
+                pre6d = selected.pregrasp6d
+                retreat6d = selected.retreat6d
 
                 if central_best is None:
                     _print_grasp(best, robot_backend)
@@ -826,6 +997,11 @@ def main() -> int:
                     ready_cfg,
                     motion_cfg,
                     dry_run=args.dry_run,
+                    joint_targets=(
+                        selected.pregrasp_joints,
+                        selected.grasp_joints,
+                        selected.retreat_joints,
+                    ) if robot_backend == "rars01" else None,
                 )
 
             if vis is not None and not vis.poll():
@@ -856,6 +1032,8 @@ def main() -> int:
             cam.close()
         except Exception:
             pass
+        if graspnet_worker is not None:
+            graspnet_worker.close()
         if vis is not None:
             vis.close()
         cv2.destroyAllWindows()

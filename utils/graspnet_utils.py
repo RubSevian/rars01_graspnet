@@ -310,6 +310,12 @@ def filter_grasps_by_width(grasps: GraspGroup, max_width_m: Optional[float]) -> 
     return grasps[np.asarray(grasps.widths, dtype=np.float64) <= float(max_width_m)]
 
 
+def filter_grasps_by_depth(grasps: GraspGroup, max_depth_m: Optional[float]) -> GraspGroup:
+    if max_depth_m is None or len(grasps) == 0:
+        return grasps
+    return grasps[np.asarray(grasps.depths, dtype=np.float64) <= float(max_depth_m)]
+
+
 def select_best_grasp(grasps: GraspGroup) -> Optional[Grasp]:
     if len(grasps) == 0:
         return None
@@ -468,6 +474,7 @@ def infer_frame(
     target_margin_px: int = 0,
     target_expand_ratio: float = 1.0,
     max_grasp_width_m: Optional[float] = None,
+    max_grasp_depth_m: Optional[float] = None,
 ) -> GraspNetFrameResult:
     try:
         from .yolo_utils import detect_objects
@@ -513,6 +520,7 @@ def infer_frame(
         )
     bbox_grasps = copy_grasp_group(grasps)
     grasps = filter_grasps_by_width(grasps, max_grasp_width_m)
+    grasps = filter_grasps_by_depth(grasps, max_grasp_depth_m)
     best = select_best_grasp(grasps)
     elapsed = time.time() - tic
 

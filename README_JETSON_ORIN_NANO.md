@@ -188,6 +188,29 @@ cmake --build ../rars_arm_sdk/build-python -j2
 .venv/bin/python scripts/check_robot.py --config config/jetson_orin_nano.yaml
 ```
 
+### Стабильный порт STM32 после холодного старта
+
+Драйвер ждёт `/dev/ttyACM0` до 20 секунд и повторяет подключение без включения
+моторов. Чтобы номер `ttyACM` не менялся, один раз создайте постоянное имя:
+
+```bash
+sudo install -m 644 config/udev/99-rars01-stm32.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+```
+
+После переподключения STM32 убедитесь, что есть `/dev/rars01_stm32`, и замените
+`robot.rars01.port` в YAML на `/dev/rars01_stm32`. Если устройства нет даже в
+`lsusb`, Type-C не перешёл в USB-host или есть аппаратная проблема: ожидание
+порта это исправить не может.
+
+Если STM32 есть в `lsusb`, но `/dev/ttyACM*` не появился или порт завис,
+выключите моторы и переинициализируйте только STM32 (Gemini не затрагивается):
+
+```bash
+sudo .venv/bin/python scripts/reset_stm32_usb.py --execute
+```
+
 ## 6. GraspNet CUDA-операторы
 
 Исходники уже должны быть в `sdk/graspnet-baseline/` и
@@ -215,6 +238,15 @@ PYTHON_BIN="$PWD/.venv/bin/python" bash scripts/install_graspnet.sh
 
 ## 7. Безопасный первый запуск
 
+На Jetson GraspNet запускается в отдельном процессе `graspnet-cuda-worker`.
+Модель загружается до подключения робота. После нажатия `G` основной процесс
+ожидает ответ worker, а существующий цикл RARS01 продолжает отправлять текущую
+позицию с частотой 100 Hz. Камера и `/dev/ttyACM0` остаются только в основном
+процессе; worker не имеет доступа к железу. Максимальное ожидание задаётся
+`graspnet.worker_timeout_s` (по умолчанию 30 секунд).
+
+Пересобирать `rars_arm_sdk` для этого режима не требуется.
+
 Сначала камера и робот без объекта, с рукой над свободным столом:
 
 ```bash
@@ -226,3 +258,64 @@ PYTHON_BIN="$PWD/.venv/bin/python" bash scripts/install_graspnet.sh
 Только затем проверяйте реальное движение без объекта, а после этого — медленный
 захват простого объекта. Не повышайте частоту 100 Hz и не включайте TensorRT до
 стабильной работы камеры, USB CDC и GraspNet.
+
+При нажатии `G` кандидаты GraspNet сортируются по score, для параллельного
+гриппера проверяются обе эквивалентные ориентации, а IK решается цепочкой
+`текущая поза -> pregrasp -> grasp -> retreat`. RARS01 выполняет уже найденные
+суставные решения в POS_VEL, не запуская IK повторно.
+
+Постоянное смещение после проверки hand-eye задаётся в `config/default.yaml`:
+
+```yaml
+grasp_pipeline:
+  grasp:
+    position_compensation_base_m: {x: 0.0, y: 0.0, z: 0.0}
+```
+
+Значения задаются в метрах по осям `base_link`. Если губки стабильно приходят,
+например, на `+5 мм` дальше по X, установить `x: -0.005`. Менять по одной оси и
+сначала проверять с `--dry-run`. `insertion_depth_m` — только дополнительное
+заглубление относительно центра GraspNet; это не физическая глубина губок 80 мм.
+
+### Проверка нового рычажного гриппера
+
+В конфиге задана геометрия: радиус центрального рычага 37.5 мм, короткие
+тяги 40 мм, каретки 30 мм, полезное раскрытие 100 мм и глубина 80 мм.
+Сначала вывести расчёт без подключения робота:
+
+```bash
+.venv/bin/python scripts/check_gripper_linkage.py \
+  --config config/jetson_orin_nano.yaml
+```
+
+Для проверки штангенциркулем вручную полностью закрыть губки при выключенных
+моторах, поставить руку в home, подготовить аварийную остановку и явно добавить
+`--execute`:
+
+```bash
+.venv/bin/python scripts/check_gripper_linkage.py \
+  --config config/jetson_orin_nano.yaml --execute
+```
+
+После `START` скрипт сразу задаёт первое значение. Для следующих значений 40,
+60, 80 и 100 мм ждёт Enter и печатает ошибку после ввода измеренного раскрытия. Моторы всегда
+отключаются при выходе. Если направление движения неверное, немедленно
+остановить тест и изменить только `robot.gripper.rars01.counterclockwise`.
+Закрытая позиция берётся только из `robot.gripper.rars01.closed_position_rad`;
+промежуточный feedback при включении не используется как ноль.
+
+### Eye-in-hand калибровка камеры
+
+После изменения крепления камеры или frame `End_link` выполните калибровку:
+
+```bash
+.venv/bin/python scripts/collect_handeye_eih.py \
+  --config config/jetson_orin_nano.yaml --robot-backend rars01
+```
+
+На Jetson установленный OpenCV может не содержать `cv2.calibrateHandEye`.
+Дополнительно устанавливать OpenCV не нужно: скрипт автоматически использует
+совместимый NumPy-решатель. Результат сохраняется в
+`config/calibration/orbbec_gemini2/hand_eye.npz`, а исходные измерения — в
+`config/calibration/orbbec_gemini2/hand_eye_samples.npz`; прежний результат
+перезаписывается только после успешного решения.

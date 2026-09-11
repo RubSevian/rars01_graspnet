@@ -43,7 +43,8 @@ class GraspNetEstimator:
                  voxel_size_m: float = 0.01, min_depth_m: float = 0.08,
                  max_depth_m: float = 1.0, top_k: int = 30,
                  target_margin_px: int = 12, target_expand_ratio: float = 1.1,
-                 max_grasp_width_m: float | None = None):
+                 max_grasp_width_m: float | None = None,
+                 max_grasp_depth_m: float | None = None):
         self.root = prepare_graspnet_imports(root)
         self.checkpoint = Path(checkpoint).expanduser().resolve()
         if not self.checkpoint.is_file():
@@ -77,6 +78,7 @@ class GraspNetEstimator:
         self.target_margin_px = int(target_margin_px)
         self.target_expand_ratio = float(target_expand_ratio)
         self.max_grasp_width_m = max_grasp_width_m
+        self.max_grasp_depth_m = max_grasp_depth_m
 
         self.net = GraspNet(
             input_feature_dim=0, num_view=int(num_view), num_angle=12, num_depth=4,
@@ -121,6 +123,8 @@ class GraspNetEstimator:
             )
         if self.max_grasp_width_m is not None and len(grasps):
             grasps = grasps[np.asarray(grasps.widths) <= float(self.max_grasp_width_m)]
+        if self.max_grasp_depth_m is not None and len(grasps):
+            grasps = grasps[np.asarray(grasps.depths) <= float(self.max_grasp_depth_m)]
         try:
             grasps = grasps.nms()
         except (ImportError, ModuleNotFoundError):
@@ -141,6 +145,7 @@ class GraspNetEstimator:
 
 def estimator_from_config(config: dict[str, Any], resolve_path) -> GraspNetEstimator:
     gc = config["graspnet"]
+    hardware = config.get("robot", {}).get("rars01", {})
     return GraspNetEstimator(
         resolve_path(config, gc["root"]), resolve_path(config, gc["checkpoint"]),
         num_view=int(gc.get("num_view", 300)), num_point=int(gc.get("num_point", 20000)),
@@ -150,7 +155,8 @@ def estimator_from_config(config: dict[str, Any], resolve_path) -> GraspNetEstim
         max_depth_m=float(gc.get("max_depth_m", 1.0)), top_k=int(gc.get("top_k", 30)),
         target_margin_px=int(gc.get("target_margin_px", 12)),
         target_expand_ratio=float(gc.get("target_expand_ratio", 1.1)),
-        max_grasp_width_m=gc.get("max_grasp_width_m"),
+        max_grasp_width_m=gc.get("max_grasp_width_m", hardware.get("max_grasp_width_m")),
+        max_grasp_depth_m=gc.get("max_grasp_depth_m", hardware.get("max_grasp_depth_m")),
     )
 
 
