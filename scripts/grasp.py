@@ -77,6 +77,11 @@ from utils.transforms import (  # noqa: E402
     pose6d_to_mat4,
     rotation_matrix_to_euler_zyx,
 )
+from rars01_graspnet.grasp_selection import (  # noqa: E402
+    joint_limit_cost,
+    motion_cost,
+    normalized_grasp_costs,
+)
 from utils.yolo_utils import (  # noqa: E402
     YoloDetection,
     detect_objects,
@@ -106,6 +111,117 @@ def _wait_motion(controller: Any, duration: float, extra: float = 0.6) -> None:
         raise RuntimeError("RARS01 control loop stopped unexpectedly")
 
 
+def _rotation_error_rad(target: np.ndarray, actual: np.ndarray) -> float:
+    relative = np.asarray(target, dtype=np.float64).T @ np.asarray(actual, dtype=np.float64)
+    cosine = float(np.clip((np.trace(relative) - 1.0) * 0.5, -1.0, 1.0))
+    return float(np.arccos(cosine))
+
+
+def _wait_rars_end_link(
+    controller: Any,
+    grasp_driver: GraspDriver,
+    target6d: tuple[float, ...],
+    target_joints: np.ndarray,
+    planned_duration_s: float,
+    started_at: float,
+    feedback_cfg: dict[str, Any],
+    label: str,
+) -> bool:
+    """Require fresh, stable measured End_link feedback before the next stage."""
+    position_tolerance = float(feedback_cfg["grasp_position_tolerance_m"])
+    orientation_tolerance = np.deg2rad(float(feedback_cfg["grasp_orientation_tolerance_deg"]))
+    velocity_tolerance = np.deg2rad(float(feedback_cfg["velocity_tolerance_deg_s"]))
+    settle_time = float(feedback_cfg["settle_time_s"])
+    max_age = float(feedback_cfg["max_feedback_age_s"])
+    deadline = started_at + float(planned_duration_s) + float(feedback_cfg["timeout_margin_s"])
+    target = pose6d_to_mat4(*target6d)
+    previous_sequence = -1
+    settle_started: Optional[float] = None
+    last_reason = "waiting"
+    last_log: Optional[tuple[Any, ...]] = None
+
+    while time.monotonic() < deadline:
+        transport = getattr(controller, "rebotarm", None)
+        failure = getattr(transport, "_failure", None)
+        if failure is not None:
+            print(f"[Feedback/{label}] ABORT transport error: {failure}")
+            return False
+        thread = getattr(controller, "_send_thread", None)
+        sending_done = thread is None or not thread.is_alive()
+        try:
+            feedback = grasp_driver.get_end_link_feedback(refresh=sending_done)
+        except Exception as exc:
+            print(f"[Feedback/{label}] ABORT feedback error: {exc}")
+            return False
+
+        if not feedback.valid:
+            print(f"[Feedback/{label}] ABORT invalid feedback")
+            return False
+        if feedback.age_s > max_age:
+            last_reason = "stale feedback"
+            settle_started = None
+        elif feedback.sequence == previous_sequence:
+            # Do not count a cached sample as additional evidence.  Its age is
+            # still checked above; the next fresh sample decides whether the
+            # existing settle interval remains valid.
+            last_reason = "waiting for next feedback sequence"
+        else:
+            previous_sequence = feedback.sequence
+            position_error = float(np.linalg.norm(feedback.pose[:3, 3] - target[:3, 3]))
+            orientation_error = _rotation_error_rad(target[:3, :3], feedback.pose[:3, :3])
+            max_velocity = float(np.max(np.abs(feedback.velocity)))
+            ready = (
+                sending_done
+                and position_error <= position_tolerance
+                and orientation_error <= orientation_tolerance
+                and max_velocity <= velocity_tolerance
+            )
+            last_log = (feedback, position_error, orientation_error, max_velocity)
+            if ready:
+                settle_started = time.monotonic() if settle_started is None else settle_started
+                if time.monotonic() - settle_started >= settle_time:
+                    print(
+                        f"[Feedback/{label}] READY planned={planned_duration_s:.3f}s "
+                        f"seq={feedback.sequence} age={feedback.age_s:.3f}s "
+                        f"pos={position_error * 1000.0:.2f}mm "
+                        f"rot={np.rad2deg(orientation_error):.2f}deg "
+                        f"max_vel={np.rad2deg(max_velocity):.2f}deg/s"
+                    )
+                    return True
+                last_reason = "settling"
+            else:
+                settle_started = None
+                last_reason = "trajectory/pose/velocity outside tolerance"
+        time.sleep(0.01)
+
+    if last_log is not None:
+        feedback, position_error, orientation_error, max_velocity = last_log
+        thread = getattr(controller, "_send_thread", None)
+        sending_done = thread is None or not thread.is_alive()
+        command = np.asarray(controller._q_target, dtype=np.float64).copy()
+        command_error = float(np.max(np.abs(command - target_joints)))
+        joint_errors = feedback.joints - target_joints
+        worst_joint = int(np.argmax(np.abs(joint_errors)))
+        print(
+            f"[Feedback/{label}] ABORT timeout planned={planned_duration_s:.3f}s "
+            f"seq={feedback.sequence} age={feedback.age_s:.3f}s "
+            f"q={np.round(feedback.joints, 5).tolist()} "
+            f"q_target={np.round(target_joints, 5).tolist()} "
+            f"pos={position_error * 1000.0:.2f}mm "
+            f"rot={np.rad2deg(orientation_error):.2f}deg "
+            f"max_vel={np.rad2deg(max_velocity):.2f}deg/s reason={last_reason} "
+            f"elapsed={time.monotonic() - started_at:.3f}s "
+            f"sending_done={sending_done} "
+            f"q_command={np.round(command, 5).tolist()} "
+            f"command_target_error={command_error:.6f}rad "
+            f"worst_joint={worst_joint + 1} "
+            f"joint_error={np.rad2deg(joint_errors[worst_joint]):+.2f}deg"
+        )
+    else:
+        print(f"[Feedback/{label}] ABORT timeout: {last_reason}")
+    return False
+
+
 def _move_ready(controller: Any, ready_cfg: dict[str, Any]) -> None:
     duration = float(ready_cfg.get("duration", 3.0))
     controller.move_to_traj(
@@ -125,6 +241,8 @@ class IkSolution:
     success: bool
     error: float
     joints: np.ndarray
+    position_error_m: float = float("inf")
+    orientation_error_rad: float = float("inf")
 
 
 @dataclass(frozen=True)
@@ -136,11 +254,24 @@ class ExecutableGrasp:
     pregrasp_joints: np.ndarray
     grasp_joints: np.ndarray
     retreat_joints: np.ndarray
+    approach_joint_waypoints: tuple[np.ndarray, ...] = ()
+    retreat_joint_waypoints: tuple[np.ndarray, ...] = ()
+    flip: bool = False
+    raw_score: float = 0.0
+    normalized_score: float = 0.0
+    cost: float = float("inf")
 
 
 class IkChecker:
-    def __init__(self, arm: Any, retry_count: int = 3) -> None:
+    def __init__(
+        self,
+        arm: Any,
+        retry_count: int = 3,
+        position_tolerance_m: float = 0.010,
+        orientation_tolerance_rad: float = np.deg2rad(5.0),
+    ) -> None:
         from reBotArm_control_py.kinematics import (
+            compute_fk,
             get_end_effector_frame_id,
             load_robot_model,
             pad_q_for_model,
@@ -155,6 +286,7 @@ class IkChecker:
             raise ValueError("Hardware config missing groups.arm")
         self._n = self._arm_group.num_joints
         self._pad_q_for_model = pad_q_for_model
+        self._compute_fk = compute_fk
         self._pos_rot_to_se3 = pos_rot_to_se3
         self._solve_ik = solve_ik
         load_arm_model = getattr(arm, "load_kinematic_model", None)
@@ -162,13 +294,38 @@ class IkChecker:
         self._end_frame_id = get_end_effector_frame_id(self._model)
         self._params = IKParams(max_iter=200, tolerance=1e-4, step_size=0.5, damping=1e-6)
         self._retry_count = max(0, int(retry_count))
+        self._position_tolerance_m = float(position_tolerance_m)
+        self._orientation_tolerance_rad = float(orientation_tolerance_rad)
+        if self._position_tolerance_m <= 0.0 or self._orientation_tolerance_rad <= 0.0:
+            raise ValueError("IK FK tolerances must be positive")
         self._lower = np.asarray(self._model.lowerPositionLimit[:self._n], dtype=np.float64)
         self._upper = np.asarray(self._model.upperPositionLimit[:self._n], dtype=np.float64)
+        self._frame_name = self._model.frames[self._end_frame_id].name
 
     def current_joints(self) -> np.ndarray:
         return np.asarray(
             self._arm.get_state(request_feedback=False)[0][:self._n], dtype=np.float64
         ).copy()
+
+    def joint_limits(self) -> tuple[np.ndarray, np.ndarray]:
+        return self._lower.copy(), self._upper.copy()
+
+    def fk_errors(
+        self, pose6d: tuple[float, ...], joints: np.ndarray
+    ) -> tuple[float, float]:
+        """Return independent FK position and orientation errors for one target."""
+        q = self._pad_q_for_model(
+            self._model, np.asarray(joints, dtype=np.float64).reshape(self._n), self._n
+        )
+        position, rotation, _ = self._compute_fk(
+            self._model, q, frame_name=self._frame_name
+        )
+        target = pose6d_to_mat4(*pose6d)
+        position_error = float(np.linalg.norm(position - target[:3, 3]))
+        R_error = target[:3, :3].T @ rotation
+        cosine = float(np.clip((np.trace(R_error) - 1.0) * 0.5, -1.0, 1.0))
+        orientation_error = float(np.arccos(cosine))
+        return position_error, orientation_error
 
     def solve(
         self,
@@ -194,6 +351,7 @@ class IkChecker:
             seeds.append((1.0 - fraction) * reference + fraction * midpoint)
 
         best_result = None
+        best_errors = (float("inf"), float("inf"))
         for seed in seeds:
             result = self._solve_ik(
                 self._model,
@@ -204,19 +362,108 @@ class IkChecker:
                 self._params,
                 controlled_joints=self._n,
             )
+            q = np.asarray(result.q[:self._n], dtype=np.float64)
+            position_error, orientation_error = self.fk_errors(
+                (x, y, z, roll, pitch, yaw), q
+            )
             if best_result is None or float(result.error) < float(best_result.error):
                 best_result = result
+                best_errors = (position_error, orientation_error)
             if result.success:
-                q = np.asarray(result.q[:self._n], dtype=np.float64)
                 # Seeds are ordered from the previous chain point toward the
                 # joint-range midpoint, so the first success is the most local.
-                return IkSolution(True, float(result.error), q.copy())
+                if (
+                    np.all(q >= self._lower)
+                    and np.all(q <= self._upper)
+                    and position_error <= self._position_tolerance_m
+                    and orientation_error <= self._orientation_tolerance_rad
+                ):
+                    return IkSolution(
+                        True, float(result.error), q.copy(), position_error, orientation_error
+                    )
         assert best_result is not None
+        q = np.asarray(best_result.q[:self._n], dtype=np.float64).copy()
         return IkSolution(
             False,
             float(best_result.error),
-            np.asarray(best_result.q[:self._n], dtype=np.float64).copy(),
+            q,
+            *best_errors,
         )
+
+
+def _cartesian_waypoint_pose(
+    start6d: tuple[float, ...], end6d: tuple[float, ...], alpha: float
+) -> tuple[float, ...]:
+    """Linearly interpolate TCP position while keeping the end orientation."""
+    start = np.asarray(start6d, dtype=np.float64)
+    end = np.asarray(end6d, dtype=np.float64)
+    T = pose6d_to_mat4(*end6d)
+    T[:3, 3] = (1.0 - alpha) * start[:3] + alpha * end[:3]
+    from utils.transforms import mat4_to_pose6d
+
+    return mat4_to_pose6d(T)
+
+
+def _plan_cartesian_segment(
+    ik_checker: IkChecker,
+    start6d: tuple[float, ...],
+    end6d: tuple[float, ...],
+    start_joints: np.ndarray,
+    cartesian_cfg: dict[str, Any],
+    label: str,
+) -> Optional[tuple[np.ndarray, ...]]:
+    """Solve a constant-orientation Cartesian segment as continuous IK points."""
+    waypoint_count = int(cartesian_cfg["waypoint_count"])
+    warn_step_rad = np.deg2rad(float(cartesian_cfg["joint_step_warn_deg"]))
+    reject_step_rad = np.deg2rad(float(cartesian_cfg["max_joint_step_deg"]))
+    previous = np.asarray(start_joints, dtype=np.float64).copy()
+    points: list[np.ndarray] = []
+
+    for waypoint_index in range(1, waypoint_count + 1):
+        alpha = waypoint_index / waypoint_count
+        target = _cartesian_waypoint_pose(start6d, end6d, alpha)
+        solution = ik_checker.solve(*target, reference_joints=previous)
+        delta = np.abs(solution.joints - previous)
+        max_joint_index = int(np.argmax(delta))
+        max_delta = float(delta[max_joint_index])
+        status = "OK" if solution.success else "FAIL"
+        print(
+            f"[Cartesian/{label}] waypoint={waypoint_index}/{waypoint_count} "
+            f"target_xyz={np.round(np.asarray(target[:3]), 5).tolist()} "
+            f"target_rpy={np.round(np.asarray(target[3:]), 5).tolist()} "
+            f"IK={status} fk_pos_mm={solution.position_error_m * 1000.0:.2f} "
+            f"fk_rot_deg={np.rad2deg(solution.orientation_error_rad):.2f} "
+            f"max_delta_q={max_delta:.4f} joint={max_joint_index + 1}"
+        )
+        if not solution.success:
+            if solution.position_error_m > float(cartesian_cfg["ik_position_tolerance_m"]):
+                reason = "FK position error exceeds tolerance"
+            elif solution.orientation_error_rad > np.deg2rad(
+                float(cartesian_cfg["ik_orientation_tolerance_deg"])
+            ):
+                reason = "FK orientation error exceeds tolerance"
+            else:
+                reason = "IK did not converge or target violates joint limits"
+            print(f"[Cartesian/{label}] reject: {reason}")
+            return None
+        if max_delta > reject_step_rad:
+            print(
+                f"[Cartesian/{label}] reject: joint {max_joint_index + 1} step "
+                f"{np.rad2deg(max_delta):.2f} deg exceeds "
+                f"{np.rad2deg(reject_step_rad):.2f} deg"
+            )
+            return None
+        if max_delta > warn_step_rad:
+            print(
+                f"[Cartesian/{label}] warning: joint {max_joint_index + 1} step "
+                f"{np.rad2deg(max_delta):.2f} deg exceeds "
+                f"{np.rad2deg(warn_step_rad):.2f} deg"
+            )
+        points.append(solution.joints)
+        previous = solution.joints
+
+    return tuple(points)
+
 
 def _execute_grasp(
     controller: Any,
@@ -228,6 +475,7 @@ def _execute_grasp(
     motion_cfg: dict[str, Any],
     dry_run: bool,
     joint_targets: Optional[tuple[np.ndarray, np.ndarray, np.ndarray]] = None,
+    cartesian_joint_paths: Optional[tuple[tuple[np.ndarray, ...], tuple[np.ndarray, ...]]] = None,
 ) -> bool:
     xg, yg, zg, rxg, ryg, rzg = grasp6d
     xp, yp, zp, rxp, ryp, rzp = pre6d
@@ -247,8 +495,18 @@ def _execute_grasp(
     pregrasp_duration = float(motion_cfg.get("pregrasp_duration_s", 2.0))
     grasp_duration = float(motion_cfg.get("grasp_duration_s", 1.5))
     retreat_duration = float(motion_cfg.get("retreat_duration_s", 1.5))
+    feedback_cfg = {
+        "grasp_position_tolerance_m": 0.005,
+        "grasp_orientation_tolerance_deg": 3.0,
+        "velocity_tolerance_deg_s": 2.0,
+        "settle_time_s": 0.2,
+        "timeout_margin_s": 1.5,
+        "max_feedback_age_s": 0.10,
+        **dict(motion_cfg.get("motion_feedback", {})),
+    }
 
     print("[Grasp] Move to pregrasp")
+    stage_started = time.monotonic()
     if joint_targets is not None:
         duration = grasp_driver.move_rars_joint_target(joint_targets[0], pregrasp_duration)
     else:
@@ -256,17 +514,42 @@ def _execute_grasp(
             print("[Grasp] Pregrasp IK failed")
             return False
         duration = pregrasp_duration
-    _wait_motion(controller, duration)
+    if joint_targets is not None:
+        if not _wait_rars_end_link(
+            controller, grasp_driver, pre6d, joint_targets[0], duration, stage_started,
+            feedback_cfg, "pregrasp",
+        ):
+            print("[Grasp] ABORT before Cartesian approach")
+            return False
+    else:
+        _wait_motion(controller, duration)
 
     print("[Grasp] Move to grasp")
-    if joint_targets is not None:
+    stage_started = time.monotonic()
+    if cartesian_joint_paths is not None:
+        duration = grasp_driver.move_rars_joint_waypoints(
+            cartesian_joint_paths[0], grasp_duration
+        )
+    elif joint_targets is not None:
         duration = grasp_driver.move_rars_joint_target(joint_targets[1], grasp_duration)
     else:
         if not controller.move_to_traj(xg, yg, zg, rxg, ryg, rzg, duration=grasp_duration):
             print("[Grasp] Grasp IK failed")
             return False
         duration = grasp_duration
-    _wait_motion(controller, duration)
+    if joint_targets is not None:
+        grasp_target_joints = (
+            cartesian_joint_paths[0][-1]
+            if cartesian_joint_paths is not None else joint_targets[1]
+        )
+        if not _wait_rars_end_link(
+            controller, grasp_driver, grasp6d, grasp_target_joints, duration, stage_started,
+            feedback_cfg, "grasp",
+        ):
+            print("[Grasp] ABORT: gripper remains open")
+            return False
+    else:
+        _wait_motion(controller, duration)
 
     print("[Grasp] Closing")
     ok = grasp_driver.grasp()
@@ -279,7 +562,12 @@ def _execute_grasp(
         time.sleep(grip_settle_s)
 
     print("[Grasp] Retreat")
-    if joint_targets is not None:
+    if cartesian_joint_paths is not None:
+        duration = grasp_driver.move_rars_joint_waypoints(
+            cartesian_joint_paths[1], retreat_duration
+        )
+        _wait_motion(controller, duration)
+    elif joint_targets is not None:
         duration = grasp_driver.move_rars_joint_target(joint_targets[2], retreat_duration)
         _wait_motion(controller, duration)
     elif controller.move_to_traj(xr, yr, zr, rxr, ryr, rzr, duration=retreat_duration):
@@ -307,10 +595,7 @@ def _print_grasp(grasp: Grasp, robot_backend: str) -> None:
 def _rank_grasps(grasps: GraspGroup, apply_nms: bool = True) -> GraspGroup:
     ranked = GraspGroup(grasps.grasp_group_array.copy())
     if apply_nms and len(ranked) > 1:
-        try:
-            ranked = ranked.nms()
-        except Exception as exc:
-            print(f"[WARN] GraspNet NMS skipped: {exc}")
+        ranked = graspnet_utils.nms_grasp_group(ranked)
     ranked.sort_by_score()
     return ranked
 
@@ -427,11 +712,21 @@ def _select_executable_grasp(
     robot_backend: str,
     allow_parallel_flip: bool,
     apply_nms: bool,
-    prefer_current_orientation: bool,
     position_compensation_base_m: np.ndarray,
     candidate_limit: int,
+    cartesian_ik_cfg: dict[str, Any],
+    candidate_selection_cfg: dict[str, Any],
 ) -> Optional[ExecutableGrasp]:
     ranked = _rank_grasps(grasps, apply_nms=apply_nms)
+    top_count = min(len(ranked), candidate_limit)
+    if top_count == 0:
+        return None
+    top_scores = np.asarray(ranked.scores[:top_count], dtype=np.float64)
+    grasp_costs = normalized_grasp_costs(top_scores)
+    weight_grasp = float(candidate_selection_cfg["weight_grasp"])
+    weight_joint = float(candidate_selection_cfg["weight_joint"])
+    weight_motion = float(candidate_selection_cfg["weight_motion"])
+    motion_normalization = float(candidate_selection_cfg["motion_normalization"])
     skipped_low = 0
     skipped_jaw = 0
     skipped_depth = 0
@@ -439,14 +734,11 @@ def _select_executable_grasp(
     worst_err = 0.0
 
     pose_candidates = []
-    current_rotation = (
-        grasp_driver.get_tcp_pose()[:3, :3]
-        if prefer_current_orientation else None
-    )
-    for idx in range(min(len(ranked), candidate_limit)):
+    for idx in range(top_count):
         grasp = ranked[idx]
         if float(grasp.depth) > max_grasp_depth_m:
             skipped_depth += 1
+            print(f"[Candidate] rank={idx + 1} reject=depth")
             continue
         orientation_candidates = (
             (grasp, _parallel_flip_grasp(grasp)) if allow_parallel_flip else (grasp,)
@@ -464,29 +756,52 @@ def _select_executable_grasp(
                 # Both equivalent parallel-gripper orientations are checked here.
                 allow_parallel_flip=False,
             )
+            print(
+                "[G/transform] "
+                f"translation={np.round(oriented_grasp.translation, 6).tolist()} "
+                f"depth={float(oriented_grasp.depth):.6f} "
+                f"approach_axis_cam={np.round(oriented_grasp.rotation_matrix[:, 0], 6).tolist()} "
+                f"End_link_target_base={np.round(np.asarray(grasp6d[:3]), 6).tolist()}"
+            )
             grasp6d = _translate_pose(grasp6d, position_compensation_base_m)
             pre6d = _translate_pose(pre6d, position_compensation_base_m)
             retreat6d = _translate_pose(retreat6d, position_compensation_base_m)
-            rotation_cost = 0.0
-            if current_rotation is not None:
-                target_rotation = pose6d_to_mat4(*pre6d)[:3, :3]
-                relative = current_rotation.T @ target_rotation
-                cosine = float(np.clip((np.trace(relative) - 1.0) * 0.5, -1.0, 1.0))
-                rotation_cost = float(np.arccos(cosine))
             pose_candidates.append(
-                (rotation_cost, idx, branch_index, grasp, T_grasp_tcp, grasp6d, pre6d, retreat6d)
+                (
+                    idx,
+                    branch_index,
+                    oriented_grasp,
+                    grasp6d,
+                    pre6d,
+                    retreat6d,
+                    float(grasp.score),
+                    float(1.0 - grasp_costs[idx]),
+                    float(grasp_costs[idx]),
+                )
             )
 
-    if prefer_current_orientation:
-        pose_candidates.sort(key=lambda item: item[0])
-
     current_joints = ik_checker.current_joints()
-    for exec_idx, candidate in enumerate(pose_candidates):
-        _, original_idx, branch_index, grasp, T_grasp_tcp, grasp6d, pre6d, retreat6d = candidate
+    lower, upper = ik_checker.joint_limits()
+    executable: list[ExecutableGrasp] = []
+    for candidate in pose_candidates:
+        (
+            original_idx,
+            branch_index,
+            grasp,
+            grasp6d,
+            pre6d,
+            retreat6d,
+            raw_score,
+            normalized_score,
+            grasp_cost,
+        ) = candidate
+        flip = bool(branch_index)
+        candidate_label = f"rank={original_idx + 1} flip={int(flip)}"
         if not all(
             _pose_z_ok(pose, min_base_z_m) for pose in (pre6d, grasp6d, retreat6d)
         ):
             skipped_low += 1
+            print(f"[Candidate] {candidate_label} reject=base_z")
             continue
         if (
             robot_backend == "rars01"
@@ -496,39 +811,73 @@ def _select_executable_grasp(
             ) < min_jaw_z_m
         ):
             skipped_jaw += 1
+            print(f"[Candidate] {candidate_label} reject=jaw_z")
             continue
 
         pre = ik_checker.solve(*pre6d, reference_joints=current_joints)
-        grasp_solution = (
-            ik_checker.solve(*grasp6d, reference_joints=pre.joints)
-            if pre.success else IkSolution(False, pre.error, pre.joints)
-        )
-        retreat = (
-            ik_checker.solve(*retreat6d, reference_joints=grasp_solution.joints)
-            if grasp_solution.success
-            else IkSolution(False, grasp_solution.error, grasp_solution.joints)
-        )
+        approach_waypoints: tuple[np.ndarray, ...] = ()
+        retreat_waypoints: tuple[np.ndarray, ...] = ()
+        if robot_backend == "rars01" and pre.success:
+            approach_waypoints = _plan_cartesian_segment(
+                ik_checker, pre6d, grasp6d, pre.joints, cartesian_ik_cfg, "approach"
+            ) or ()
+            if approach_waypoints:
+                grasp_solution = IkSolution(True, 0.0, approach_waypoints[-1])
+                retreat_waypoints = _plan_cartesian_segment(
+                    ik_checker,
+                    grasp6d,
+                    retreat6d,
+                    grasp_solution.joints,
+                    cartesian_ik_cfg,
+                    "retreat",
+                ) or ()
+                retreat = (
+                    IkSolution(True, 0.0, retreat_waypoints[-1])
+                    if retreat_waypoints
+                    else IkSolution(False, float("inf"), grasp_solution.joints)
+                )
+            else:
+                grasp_solution = IkSolution(False, float("inf"), pre.joints)
+                retreat = IkSolution(False, float("inf"), pre.joints)
+        else:
+            grasp_solution = (
+                ik_checker.solve(*grasp6d, reference_joints=pre.joints)
+                if pre.success else IkSolution(False, pre.error, pre.joints)
+            )
+            retreat = (
+                ik_checker.solve(*retreat6d, reference_joints=grasp_solution.joints)
+                if grasp_solution.success
+                else IkSolution(False, grasp_solution.error, grasp_solution.joints)
+            )
         worst_err = max(worst_err, pre.error, grasp_solution.error, retreat.error)
-        if pre.success and grasp_solution.success and retreat.success:
-            print(f"[G] Executable rank={exec_idx + 1}/{len(ranked)} score={grasp.score:.4f}")
-            if prefer_current_orientation:
-                print(
-                    f"[G] Central-mask orientation branch={original_idx + 1}/2 "
-                    f"(minimum wrist rotation first)"
-                )
-            elif allow_parallel_flip:
-                print(f"[G] parallel-gripper orientation branch={branch_index + 1}/2")
-            if robot_backend == "rars01":
-                print(
-                    "[G] jaw center in End_link [m]: "
-                    f"{np.round(T_grasp_tcp[:3, 3], 5).tolist()}"
-                )
-            if skipped_depth or skipped_low or skipped_jaw or skipped_ik:
-                print(
-                    f"[G] Skipped depth={skipped_depth} low_z={skipped_low} jaw_z={skipped_jaw} "
-                    f"ik_fail={skipped_ik}"
-                )
-            return ExecutableGrasp(
+        if not (pre.success and grasp_solution.success and retreat.success):
+            skipped_ik += 1
+            print(f"[Candidate] {candidate_label} reject=IK_or_cartesian_path")
+            continue
+
+        # This is the exact chain that will be streamed to the arm.
+        chain = np.vstack(
+            (
+                current_joints,
+                pre.joints,
+                *(approach_waypoints or (grasp_solution.joints,)),
+                *(retreat_waypoints or (retreat.joints,)),
+            )
+        )
+        limit_cost = joint_limit_cost(chain, lower, upper)
+        path_cost = motion_cost(chain, lower, upper, motion_normalization)
+        total_cost = (
+            weight_grasp * grasp_cost
+            + weight_joint * limit_cost
+            + weight_motion * path_cost
+        )
+        print(
+            f"[Candidate] {candidate_label} raw_score={raw_score:.6f} "
+            f"normalized_score={normalized_score:.6f} J_grasp={grasp_cost:.6f} "
+            f"J_joint={limit_cost:.6f} J_motion={path_cost:.6f} J_total={total_cost:.6f}"
+        )
+        executable.append(
+            ExecutableGrasp(
                 grasp=grasp,
                 grasp6d=grasp6d,
                 pregrasp6d=pre6d,
@@ -536,8 +885,28 @@ def _select_executable_grasp(
                 pregrasp_joints=pre.joints,
                 grasp_joints=grasp_solution.joints,
                 retreat_joints=retreat.joints,
+                approach_joint_waypoints=approach_waypoints,
+                retreat_joint_waypoints=retreat_waypoints,
+                flip=flip,
+                raw_score=raw_score,
+                normalized_score=normalized_score,
+                cost=total_cost,
             )
-        skipped_ik += 1
+        )
+
+    if executable:
+        selected = min(executable, key=lambda item: item.cost)
+        print(
+            f"[G] Selected rank cost={selected.cost:.6f} raw_score={selected.raw_score:.6f} "
+            f"depth={float(selected.grasp.depth):.6f}m flip={int(selected.flip)}"
+        )
+        if robot_backend == "rars01":
+            selected_tcp = grasp_driver.grasp_tcp_transform(float(selected.grasp.width))
+            print(
+                "[G] jaw center in End_link [m]: "
+                f"{np.round(selected_tcp[:3, 3], 5).tolist()}"
+            )
+        return selected
 
     print(
         f"[G] No executable grasp: depth={skipped_depth} low_z={skipped_low} jaw_z={skipped_jaw} "
@@ -629,6 +998,36 @@ def main() -> int:
     ik_candidate_limit = int(grasp_cfg.get("ik_candidate_limit", 20))
     if ik_candidate_limit <= 0:
         raise ValueError("grasp_pipeline.grasp.ik_candidate_limit must be positive")
+    cartesian_ik_cfg = dict(grasp_cfg.get("cartesian_ik", {}))
+    cartesian_ik_cfg.setdefault("waypoint_count", 20)
+    cartesian_ik_cfg.setdefault("joint_step_warn_deg", 10.0)
+    cartesian_ik_cfg.setdefault("max_joint_step_deg", 15.0)
+    cartesian_ik_cfg.setdefault("ik_position_tolerance_m", 0.010)
+    cartesian_ik_cfg.setdefault("ik_orientation_tolerance_deg", 5.0)
+    if not 2 <= int(cartesian_ik_cfg["waypoint_count"]) <= 100:
+        raise ValueError("cartesian_ik.waypoint_count must be between 2 and 100")
+    if not (
+        0.0 < float(cartesian_ik_cfg["joint_step_warn_deg"])
+        <= float(cartesian_ik_cfg["max_joint_step_deg"])
+    ):
+        raise ValueError("cartesian_ik joint step thresholds must satisfy 0 < warn <= reject")
+    candidate_selection_cfg = dict(grasp_cfg.get("candidate_selection", {}))
+    candidate_selection_cfg.setdefault("weight_grasp", 0.50)
+    candidate_selection_cfg.setdefault("weight_joint", 0.25)
+    candidate_selection_cfg.setdefault("weight_motion", 0.25)
+    candidate_selection_cfg.setdefault("motion_normalization", 2.0)
+    weights = np.asarray(
+        [
+            candidate_selection_cfg["weight_grasp"],
+            candidate_selection_cfg["weight_joint"],
+            candidate_selection_cfg["weight_motion"],
+        ],
+        dtype=np.float64,
+    )
+    if np.any(weights < 0.0) or float(weights.sum()) <= 0.0:
+        raise ValueError("candidate_selection weights must be non-negative and non-zero")
+    if float(candidate_selection_cfg["motion_normalization"]) <= 0.0:
+        raise ValueError("candidate_selection.motion_normalization must be positive")
     depth_quantile = float(grasp_cfg.get("depth_quantile", 0.5))
     central_mask_approach = str(
         grasp_cfg.get("central_mask_approach", "camera_ray")
@@ -747,12 +1146,20 @@ def main() -> int:
         )
         grasp_driver.start()
         robot_ready = True
-        ik_checker = IkChecker(rebotarm, retry_count=ik_retry_count)
+        ik_checker = IkChecker(
+            rebotarm,
+            retry_count=ik_retry_count,
+            position_tolerance_m=float(cartesian_ik_cfg["ik_position_tolerance_m"]),
+            orientation_tolerance_rad=np.deg2rad(
+                float(cartesian_ik_cfg["ik_orientation_tolerance_deg"])
+            ),
+        )
         print(f"[Robot] mode: {mode_name}")
         print("[Robot] Move ready")
         _move_ready(controller, ready_cfg)
 
         while True:
+            grasp_driver.check_health()
             color_bgr, depth_mm = cam.get_frame()
             if color_bgr is None or depth_mm is None:
                 continue
@@ -868,7 +1275,18 @@ def main() -> int:
                         selected_target = result.selected_target
                         candidate_grasps = result.grasps
                         if result.best is None:
-                            print("[G] No valid GraspNet grasp")
+                            if counts["decoded"] == 0:
+                                reason = "network decoded 0 candidates"
+                            elif len(pre_bbox_grasps) == 0:
+                                reason = (
+                                    f"collision filter removed all "
+                                    f"({counts['collision_removed']}/{counts['pre_collision']})"
+                                )
+                            elif len(bbox_grasps) == 0:
+                                reason = "no grasp center inside target YOLO region"
+                            else:
+                                reason = "all candidates exceed gripper width/depth limits"
+                            print(f"[G] No valid GraspNet grasp: {reason}")
                             continue
 
                         vis_grasps = graspnet_utils.visualization_grasps(result, args.open3d_grasps)
@@ -969,9 +1387,10 @@ def main() -> int:
                     robot_backend,
                     grasp_mode == "graspnet",
                     grasp_mode == "graspnet",
-                    grasp_mode == "central_mask",
                     position_compensation_base_m,
                     ik_candidate_limit,
+                    cartesian_ik_cfg,
+                    candidate_selection_cfg,
                 )
                 if selected is None:
                     print(f"[G] No IK-reachable grasp above min_base_z={min_base_z_m:.3f}m ")
@@ -1001,6 +1420,10 @@ def main() -> int:
                         selected.pregrasp_joints,
                         selected.grasp_joints,
                         selected.retreat_joints,
+                    ) if robot_backend == "rars01" else None,
+                    cartesian_joint_paths=(
+                        selected.approach_joint_waypoints,
+                        selected.retreat_joint_waypoints,
                     ) if robot_backend == "rars01" else None,
                 )
 

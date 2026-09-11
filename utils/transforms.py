@@ -278,6 +278,66 @@ def transform_grasp_frame_to_tcp_base_with_retreat(
     )
 
 
+def transform_graspnet_grasp_to_end_link_base_with_retreat(
+    position_cam: np.ndarray,
+    grasp_rotation_cam: np.ndarray,
+    grasp_depth_m: float,
+    T_cam2base: np.ndarray,
+    T_grasp_End_link: np.ndarray,
+    pregrasp_offset_m: float,
+    retreat_offset_m: float,
+    allow_parallel_flip: bool = True,
+) -> tuple[tuple[float, ...], tuple[float, ...], tuple[float, ...]]:
+    """Map a GraspNet grasp front edge to RARS01 ``End_link`` poses.
+
+    GraspNet defines its local X axis as the approach direction and ``depth``
+    as the displacement from ``translation`` to the front edge of its virtual
+    fingers.  The RARS01 ``End_link`` is physically located at that front edge.
+    Therefore its target position is ``p_GN + depth * R_GN[:, 0]``.  The jaw
+    centre translation in ``T_grasp_End_link`` is deliberately not used here:
+    it describes physical jaw volume for collision/height checks, not the TCP.
+    """
+    depth = float(grasp_depth_m)
+    if not np.isfinite(depth) or depth < 0.0:
+        raise ValueError("grasp_depth_m must be a finite non-negative value")
+
+    T_grasp_End_link = np.asarray(T_grasp_End_link, dtype=np.float64).reshape(4, 4)
+    R_grasp_End_link = _nearest_rotation_matrix(T_grasp_End_link[:3, :3])
+    R_raw = _nearest_rotation_matrix(grasp_rotation_cam)
+    branches = (np.eye(3), _ROT_X_PI) if allow_parallel_flip else (np.eye(3),)
+    alternatives = []
+    for branch in branches:
+        R_grasp = R_raw @ branch
+        R_end = R_grasp @ R_grasp_End_link.T
+        approach_axis = R_grasp[:, 0]
+        # The target formula is valid only when End_link +X is the GraspNet
+        # approach axis.  Reject a mismatched configured axis convention.
+        if not np.allclose(R_end[:, 0], approach_axis, atol=1e-6):
+            raise ValueError(
+                "R_grasp_End_link must preserve the GraspNet approach axis: "
+                "End_link +X must equal GraspNet +X"
+            )
+        roll = abs(float(rotation_matrix_to_euler_zyx(R_end)[0]))
+        alternatives.append((roll, R_grasp, R_end, approach_axis))
+
+    _, R_grasp, R_end_cam, approach_axis_cam = min(
+        alternatives, key=lambda item: item[0]
+    )
+    p_end_cam = np.asarray(position_cam, dtype=np.float64).reshape(3) + depth * approach_axis_cam
+
+    T_end_cam = np.eye(4, dtype=np.float64)
+    T_end_cam[:3, :3] = R_end_cam
+    T_end_cam[:3, 3] = p_end_cam
+    T_end_base = np.asarray(T_cam2base, dtype=np.float64).reshape(4, 4) @ T_end_cam
+    T_pregrasp_base = _offset_along_tool_x(T_end_base, pregrasp_offset_m)
+    T_retreat_base = _offset_along_tool_x(T_end_base, retreat_offset_m)
+    return (
+        mat4_to_pose6d(T_end_base),
+        mat4_to_pose6d(T_pregrasp_base),
+        mat4_to_pose6d(T_retreat_base),
+    )
+
+
 def graspnet_rotation_to_rebot_tcp_rotation(grasp_rotation: np.ndarray) -> np.ndarray:
     """Convert a GraspNet rotation_matrix to reBotArm TCP rotation."""
     R = np.asarray(grasp_rotation, dtype=np.float64)

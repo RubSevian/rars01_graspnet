@@ -141,6 +141,13 @@ robot:
     pregrasp_duration_s: 2.0
     grasp_duration_s: 1.5
     retreat_duration_s: 1.5
+    motion_feedback:
+      grasp_position_tolerance_m: 0.005
+      grasp_orientation_tolerance_deg: 3.0
+      velocity_tolerance_deg_s: 2.0
+      settle_time_s: 0.2
+      timeout_margin_s: 5.5
+      max_feedback_age_s: 0.10
 yolo:
   # Та же модель, которая используется в базовом конфиге оригинального проекта.
   model_name: "yoloe-26l-seg.pt"
@@ -165,14 +172,29 @@ grasp_pipeline:
     # vertical: вертикальный заход сверху, ось движения base_link -Z.
     central_mask_approach: camera_ray
     pregrasp_offset_m: 0.080 # Безопасный отступ до объекта, м.
-    # Дополнительное заглубление от центра захвата GraspNet, а не глубина
-    # 80-мм губок. Большое значение ухудшает достижимость IK.
-    insertion_depth_m: 0.015
+    # End_link стоит у передних краёв губок: цель берётся как
+    # grasp.translation + grasp.depth * approach_axis. Дополнительного
+    # заглубления не применять.
+    insertion_depth_m: 0.0
     # Систематическую ошибку измерять в base_link и компенсировать здесь.
     position_compensation_base_m: {x: 0.0, y: 0.0, z: 0.0}
     # IK идёт цепочкой pregrasp -> grasp -> retreat и проверяет обе ориентации.
     ik_retry_count: 3
     ik_candidate_limit: 20
+    cartesian_ik:
+      waypoint_count: 20
+      joint_step_warn_deg: 10.0
+      max_joint_step_deg: 15.0
+      ik_position_tolerance_m: 0.004
+      ik_orientation_tolerance_deg: 2.0
+    # J = 0.50 * J_grasp + 0.25 * J_joint + 0.25 * J_motion.
+    # motion_normalization is the full normalized joint-range path length
+    # which corresponds to J_motion = 1.
+    candidate_selection:
+      weight_grasp: 0.50
+      weight_joint: 0.25
+      weight_motion: 0.25
+      motion_normalization: 2.0
     min_base_z_m: 0.000 # Минимальная Z цели в base_link, м.
     # Минимальная высота внутренних точек обеих губок над плоскостью стола.
     min_jaw_z_m: 0.02
@@ -184,7 +206,7 @@ graspnet:
   collision_thresh: 0.01 # Порог collision фильтра GraspNet.
   min_depth: 0.05 # Ближняя глубина, м.
   max_depth: 1.0 # Дальняя глубина, м.
-  top_k: 50 # Число лучших кандидатов для анализа.
+  top_k: 20 # Число лучших кандидатов для NMS/анализа.
   worker_timeout_s: 30.0 # Максимальное ожидание ответа отдельного CUDA-процесса, с.
   target_class: "cup"  # Класс YOLO для фильтра; null — любой.
   target_margin_px: 12 # Запас вокруг маски, px.

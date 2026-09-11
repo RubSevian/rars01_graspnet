@@ -12,7 +12,8 @@ YOLOE и GraspNet. Камера установлена на руке; полож
 - текущий гриппер RARS01, раскрывающийся в плоскости `XZ`;
 - выбор захвата `graspnet` или `central_mask`;
 - вертикальный заход сверху или исходный заход по лучу камеры;
-- исходную minimum-jerk последовательность движений проекта reBot.
+- Cartesian IK-путь, выбор из 20 grasp-кандидатов и feedback-проверку End_link
+  перед закрытием гриппера.
 
 Будущая замена механики гриппера на конструкцию reBot описана в
 [`FUTURE_REBOT_GRIPPER.md`](FUTURE_REBOT_GRIPPER.md).
@@ -240,9 +241,10 @@ grasp_pipeline:
     central_mask_approach: vertical  # vertical или camera_ray
 ```
 
-Последовательность и длительности оставлены как в исходном рабочем сценарии
-reBot: `pregrasp=2.0 с`, `grasp=1.5 с`, `retreat=1.5 с`, `ready=3.0 с`.
-Дополнительных пауз и ожидания стабилизации между участками нет.
+Перед захватом строится цепочка `pregrasp → grasp → retreat`. Для RARS01
+каждый Cartesian waypoint проверяется IK/FK, а перед следующим этапом реальная
+поза `End_link` подтверждается свежим feedback. Параметры движения и допуски
+находятся в `robot.motion` файла `config/default.yaml`.
 
 ## Безопасность
 

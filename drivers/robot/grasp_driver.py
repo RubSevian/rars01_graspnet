@@ -38,6 +38,18 @@ _DEFAULT_REBOT_REPO = _CAMERAWS_ROOT / "sdk" / _REBOT_REPO_NAME
 GRIPPER_MAX_DISTANCE_M = 0.100
 
 
+@dataclass(frozen=True)
+class EndLinkFeedback:
+    """One measured arm state and its FK pose in the End_link frame."""
+
+    joints: np.ndarray
+    velocity: np.ndarray
+    pose: np.ndarray
+    sequence: int
+    age_s: float
+    valid: bool
+
+
 def _motor_array(value: Any, name: str) -> np.ndarray:
     values = np.asarray(value, dtype=np.float64).reshape(-1)
     if values.size != 7:
@@ -229,6 +241,11 @@ class RarsRebotArm:
         self._start_tolerance = float(hardware.get("start_tolerance_rad", 0.15))
         self._state: Optional[tuple[np.ndarray, np.ndarray, np.ndarray]] = None
         self._raw_position: Optional[np.ndarray] = None
+        self._feedback_sequence = 0
+        self._feedback_monotonic: Optional[float] = None
+        self._last_feedback_poll_monotonic: Optional[float] = None
+        self._last_feedback_valid = False
+        self._motor_enabled_seen = np.zeros(7, dtype=bool)
         self._pos = np.zeros(7, dtype=np.float64)
         self._vel = np.zeros(7, dtype=np.float64)
         self._cmd_kp = self._kp.copy()
@@ -358,9 +375,40 @@ class RarsRebotArm:
             self._enabled = False
 
     def _poll_feedback(self) -> bool:
+        now = time.monotonic()
         raw = self._sdk_arm.try_read_joint_state()
-        if raw is None or not all(raw.valid):
+        # The non-blocking SDK API returns None simply when the serial buffer
+        # has no *new* complete frame.  It does not invalidate the last good
+        # measured state; freshness is checked from its timestamp separately.
+        if raw is None:
             return False
+        if not all(raw.valid):
+            with self._lock:
+                self._last_feedback_poll_monotonic = now
+                self._last_feedback_valid = False
+            return False
+        motor_status = np.asarray(raw.error, dtype=np.uint8)
+        fault_indices = np.flatnonzero((motor_status >= 8) & (motor_status <= 14))
+        if fault_indices.size:
+            details = ", ".join(
+                f"motor {index + 1}=status {int(motor_status[index])}"
+                for index in fault_indices
+            )
+            raise RuntimeError(f"RARS01 motor fault: {details}")
+        enabled_now = motor_status == 1
+        unexpectedly_disabled = np.flatnonzero(
+            self._motor_enabled_seen & (motor_status == 0) & self._enabled
+        )
+        if unexpectedly_disabled.size:
+            motors = ", ".join(str(index + 1) for index in unexpectedly_disabled)
+            raise RuntimeError(f"RARS01 motors disabled unexpectedly: {motors}")
+        self._motor_enabled_seen |= enabled_now
+
+        communication = self._sdk_arm.communication_status()
+        if communication.watchdog_tripped:
+            raise RuntimeError("RARS01 SDK feedback watchdog tripped")
+        if communication.stm32_watchdog_tripped:
+            raise RuntimeError("RARS01 STM32 command watchdog tripped")
         measured_position = np.asarray(raw.position, dtype=np.float64)
         control_position = measured_position.copy()
         near_lower = (
@@ -381,7 +429,34 @@ class RarsRebotArm:
         with self._lock:
             self._raw_position = measured_position
             self._state = state
+            self._feedback_sequence += 1
+            self._feedback_monotonic = now
+            self._last_feedback_poll_monotonic = now
+            self._last_feedback_valid = True
         return True
+
+    def arm_feedback_snapshot(
+        self, refresh: bool = False
+    ) -> tuple[np.ndarray, np.ndarray, int, float, bool]:
+        """Return raw arm feedback with an update sequence and sample age."""
+        if self._failure is not None:
+            raise RuntimeError(f"RARS01 control loop failed: {self._failure}") from self._failure
+        if refresh:
+            self._poll_feedback()
+        with self._lock:
+            if (
+                self._raw_position is None
+                or self._state is None
+                or self._feedback_monotonic is None
+            ):
+                raise RuntimeError("RARS01 feedback is not ready")
+            return (
+                self._raw_position[:6].copy(),
+                self._state[1][:6].copy(),
+                int(self._feedback_sequence),
+                max(0.0, time.monotonic() - self._feedback_monotonic),
+                bool(self._last_feedback_valid),
+            )
 
     def get_state(self, request_feedback: bool = True) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         if self._failure is not None:
@@ -470,6 +545,18 @@ class RarsRebotArm:
 
         self._ctrl_thread = threading.Thread(target=loop, name="rars-rebot-control", daemon=True)
         self._ctrl_thread.start()
+
+    def check_health(self) -> None:
+        """Raise immediately when the background loop or motor hardware failed."""
+        if self._failure is not None:
+            raise RuntimeError(f"RARS01 control loop failed: {self._failure}") from self._failure
+        if self._start_validated and not self._running:
+            raise RuntimeError("RARS01 control loop stopped unexpectedly")
+        communication = self._sdk_arm.communication_status()
+        if communication.watchdog_tripped:
+            raise RuntimeError("RARS01 SDK feedback watchdog tripped")
+        if communication.stm32_watchdog_tripped:
+            raise RuntimeError("RARS01 STM32 command watchdog tripped")
 
     def stop_control_loop(self) -> None:
         self._running = False
@@ -611,6 +698,7 @@ class GraspDriver:
         configure_controller = getattr(arm, "configure_controller_kinematics", None)
         if configure_controller is not None:
             configure_controller(self._controller)
+        self._end_frame_name = self._model.frames[self._controller._end_frame_id].name
 
         selected = selected_arm_config(repo_root)
         backend = str(getattr(arm, "backend", selected.arm_type))
@@ -713,6 +801,11 @@ class GraspDriver:
         if not getattr(self._controller, "_running", False):
             raise RuntimeError("GraspDriver is not started; call grasp_driver.start() first")
 
+    def check_health(self) -> None:
+        checker = getattr(self._arm, "check_health", None)
+        if checker is not None:
+            checker()
+
     def move_rars_calibration_pose(
         self,
         x: float,
@@ -784,6 +877,65 @@ class GraspDriver:
         q_end = np.asarray(target_joints, dtype=np.float64).reshape(self._n)
         return self._start_rars_joint_motion(q_start, q_end, minimum_duration_s)
 
+    def move_rars_joint_waypoints(
+        self,
+        waypoints: tuple[np.ndarray, ...],
+        minimum_duration_s: float,
+    ) -> float:
+        """Stream prevalidated Cartesian-IK waypoints as one RARS01 trajectory."""
+        if self._backend != "rars01":
+            raise RuntimeError("move_rars_joint_waypoints is only available for RARS01")
+        self._ensure_running()
+        if self._controller._arm_control_mode != "posvel":
+            raise RuntimeError("RARS01 Cartesian waypoint motion requires POS_VEL arm control")
+        if minimum_duration_s <= 0.0:
+            raise ValueError("minimum_duration_s must be positive")
+        if not waypoints:
+            raise ValueError("at least one RARS01 waypoint is required")
+
+        q_start = np.asarray(self._arm.get_state()[0][:self._n], dtype=np.float64)
+        q_targets = [np.asarray(point, dtype=np.float64).reshape(self._n) for point in waypoints]
+        lower = self._model.lowerPositionLimit[:self._n]
+        upper = self._model.upperPositionLimit[:self._n]
+        if any(
+            not np.all(np.isfinite(point)) or np.any(point < lower) or np.any(point > upper)
+            for point in q_targets
+        ):
+            raise ValueError("RARS01 Cartesian waypoint is outside joint limits")
+
+        velocity_limits = np.asarray(
+            self._arm.position_velocity_limits_rad_s, dtype=np.float64
+        )[:self._n]
+        q_all = [q_start, *q_targets]
+        segment_minimums = np.array(
+            [
+                float(np.max(1.875 * np.abs(q_next - q_prev) / (0.8 * velocity_limits)))
+                for q_prev, q_next in zip(q_all[:-1], q_all[1:])
+            ],
+            dtype=np.float64,
+        )
+        required_duration = float(segment_minimums.sum())
+        duration = max(float(minimum_duration_s), required_duration)
+        delta_norms = np.array(
+            [float(np.linalg.norm(q_next - q_prev)) for q_prev, q_next in zip(q_all[:-1], q_all[1:])]
+        )
+        if float(delta_norms.sum()) > 1e-12:
+            extra_weights = delta_norms / delta_norms.sum()
+        else:
+            extra_weights = np.full(len(segment_minimums), 1.0 / len(segment_minimums))
+        segment_durations = segment_minimums + (duration - required_duration) * extra_weights
+
+        points: list[np.ndarray] = []
+        for q_prev, q_next, segment_duration in zip(
+            q_all[:-1], q_all[1:], segment_durations
+        ):
+            sample_count = max(1, int(np.ceil(segment_duration / self._controller._dt)))
+            phase = np.arange(1, sample_count + 1, dtype=np.float64) / sample_count
+            blend = 10.0 * phase**3 - 15.0 * phase**4 + 6.0 * phase**5
+            points.extend(q_prev + factor * (q_next - q_prev) for factor in blend)
+
+        return self._queue_rars_joint_trajectory(points, duration)
+
     def home_rars(self, minimum_duration_s: float, timeout_s: float) -> bool:
         """Return RARS01 to configured zero/home before motors are disabled."""
         if self._backend != "rars01":
@@ -831,6 +983,14 @@ class GraspDriver:
         blend = 10.0 * phase**3 - 15.0 * phase**4 + 6.0 * phase**5
         points = [q_start + factor * (q_end - q_start) for factor in blend]
 
+        return self._queue_rars_joint_trajectory(points, duration)
+
+    def _queue_rars_joint_trajectory(
+        self, points: list[np.ndarray], duration: float
+    ) -> float:
+        """Atomically replace the controller's command stream with validated points."""
+        if not points:
+            raise ValueError("RARS01 trajectory cannot be empty")
         # The generic controller owns command streaming; replace only its
         # precomputed point list after every point has passed our limit check.
         self._controller._stop_send.set()
@@ -1067,8 +1227,25 @@ class GraspDriver:
     def get_tcp_pose(self) -> np.ndarray:
         q_arm = self._arm.get_state(request_feedback=False)[0][: self._n]
         q = self._pad_q_for_model(self._model, q_arm, self._n)
-        pos, rot, _ = self._compute_fk(self._model, q)
+        pos, rot, _ = self._compute_fk(self._model, q, frame_name=self._end_frame_name)
         T = np.eye(4, dtype=np.float64)
         T[:3, :3] = rot
         T[:3, 3] = pos
         return T
+
+    def get_end_link_feedback(self, refresh: bool = False) -> EndLinkFeedback:
+        """FK of fresh measured RARS01 arm joints; never includes the gripper."""
+        if self._backend != "rars01":
+            raise RuntimeError("End_link feedback is only available for RARS01")
+        snapshot = getattr(self._arm, "arm_feedback_snapshot", None)
+        if snapshot is None:
+            raise RuntimeError("RARS01 adapter does not expose feedback sequence")
+        joints, velocity, sequence, age_s, valid = snapshot(refresh=refresh)
+        if not np.all(np.isfinite(joints)) or not np.all(np.isfinite(velocity)):
+            valid = False
+        q = self._pad_q_for_model(self._model, joints, self._n)
+        pos, rot, _ = self._compute_fk(self._model, q, frame_name=self._end_frame_name)
+        pose = np.eye(4, dtype=np.float64)
+        pose[:3, :3] = rot
+        pose[:3, 3] = pos
+        return EndLinkFeedback(joints, velocity, pose, sequence, age_s, valid)

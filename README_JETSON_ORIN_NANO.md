@@ -264,6 +264,8 @@ PYTHON_BIN="$PWD/.venv/bin/python" bash scripts/install_graspnet.sh
 `текущая поза -> pregrasp -> grasp -> retreat`. RARS01 выполняет уже найденные
 суставные решения в POS_VEL, не запуская IK повторно.
 
+Формулы выбора наиболее удобного и безопасного кандидата: [GRASP_SELECTION_MATH_CODEX.md](GRASP_SELECTION_MATH_CODEX.md).
+
 Постоянное смещение после проверки hand-eye задаётся в `config/default.yaml`:
 
 ```yaml
@@ -274,8 +276,9 @@ grasp_pipeline:
 
 Значения задаются в метрах по осям `base_link`. Если губки стабильно приходят,
 например, на `+5 мм` дальше по X, установить `x: -0.005`. Менять по одной оси и
-сначала проверять с `--dry-run`. `insertion_depth_m` — только дополнительное
-заглубление относительно центра GraspNet; это не физическая глубина губок 80 мм.
+сначала проверять с `--dry-run`. Для RARS01 `End_link` ставится по переднему
+краю GraspNet: `translation + depth * approach_axis`; `insertion_depth_m` должен
+оставаться равным `0`.
 
 ### Проверка нового рычажного гриппера
 

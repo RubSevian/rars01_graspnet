@@ -18,11 +18,32 @@ def test_jetson_config_inherits_robot_and_overrides_memory_profile():
     assert config["robot"]["gripper"]["rars01"]["default_force"] == 2.20
     assert config["robot"]["gripper"]["rars01"]["move_kp"] == 20.0
     assert config["robot"]["gripper"]["rars01"]["closed_position_rad"] == 0.0
-    assert config["grasp_pipeline"]["grasp"]["insertion_depth_m"] == 0.015
+    assert config["grasp_pipeline"]["grasp"]["insertion_depth_m"] == 0.0
     assert config["grasp_pipeline"]["grasp"]["position_compensation_base_m"] == {
         "x": 0.0, "y": 0.0, "z": 0.0,
     }
     assert config["grasp_pipeline"]["grasp"]["ik_retry_count"] == 3
+    cartesian_ik = config["grasp_pipeline"]["grasp"]["cartesian_ik"]
+    assert cartesian_ik["waypoint_count"] == 20
+    assert cartesian_ik["joint_step_warn_deg"] == 10.0
+    assert cartesian_ik["max_joint_step_deg"] == 15.0
+    assert cartesian_ik["ik_position_tolerance_m"] == 0.004
+    assert cartesian_ik["ik_orientation_tolerance_deg"] == 2.0
+    assert config["robot"]["motion"]["motion_feedback"] == {
+        "grasp_position_tolerance_m": 0.005,
+        "grasp_orientation_tolerance_deg": 3.0,
+        "velocity_tolerance_deg_s": 2.0,
+        "settle_time_s": 0.2,
+        "timeout_margin_s": 1.5,
+        "max_feedback_age_s": 0.10,
+    }
+    selection = config["grasp_pipeline"]["grasp"]["candidate_selection"]
+    assert selection == {
+        "weight_grasp": 0.50,
+        "weight_joint": 0.25,
+        "weight_motion": 0.25,
+        "motion_normalization": 2.0,
+    }
     assert config["yolo"]["model_name"] == "yoloe-26s-seg.pt"
     assert config["graspnet"]["num_point"] == 10000
     assert config["graspnet"]["top_k"] == 20

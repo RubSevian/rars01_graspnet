@@ -61,14 +61,14 @@ try:
     from .transforms import (
         graspnet_rotation_to_rars_tcp_rotation,
         graspnet_rotation_to_rebot_tcp_rotation,
-        transform_grasp_frame_to_tcp_base_with_retreat,
+        transform_graspnet_grasp_to_end_link_base_with_retreat,
         transform_grasp_pose_to_base_with_retreat,
     )
 except ImportError:
     from transforms import (
         graspnet_rotation_to_rars_tcp_rotation,
         graspnet_rotation_to_rebot_tcp_rotation,
-        transform_grasp_frame_to_tcp_base_with_retreat,
+        transform_graspnet_grasp_to_end_link_base_with_retreat,
         transform_grasp_pose_to_base_with_retreat,
     )
 
@@ -110,10 +110,7 @@ class Open3DGraspWindow:
 
         if len(grasps) > 0:
             grasps_vis = GraspGroup(grasps.grasp_group_array.copy())
-            try:
-                grasps_vis = grasps_vis.nms()
-            except Exception as exc:
-                print(f"Grasp NMS skipped: {exc}")
+            grasps_vis = nms_grasp_group(grasps_vis)
             grasps_vis.sort_by_score()
             grasps_vis = grasps_vis[: self._top_k]
             grasps_vis.transform(DISPLAY_FLIP_X)
@@ -316,14 +313,48 @@ def filter_grasps_by_depth(grasps: GraspGroup, max_depth_m: Optional[float]) -> 
     return grasps[np.asarray(grasps.depths, dtype=np.float64) <= float(max_depth_m)]
 
 
+def nms_grasp_group(
+    grasps: GraspGroup,
+    translation_thresh_m: float = 0.03,
+    rotation_thresh_rad: float = np.deg2rad(30.0),
+) -> GraspGroup:
+    """Run native GraspNet NMS, with an equivalent CPU fallback on Jetson.
+
+    The upstream extension is optional and often absent from ARM64 builds.  The
+    fallback keeps the highest-score candidate in each translation/orientation
+    neighbourhood, so top-K selection never degenerates into near-duplicates.
+    """
+    if len(grasps) < 2:
+        return GraspGroup(grasps.grasp_group_array.copy())
+    try:
+        return grasps.nms(translation_thresh_m, rotation_thresh_rad)
+    except Exception as exc:
+        ranked = GraspGroup(grasps.grasp_group_array.copy())
+        ranked.sort_by_score()
+        keep: list[int] = []
+        for index, candidate in enumerate(ranked):
+            duplicate = False
+            for kept_index in keep:
+                selected = ranked[kept_index]
+                translation_delta = float(
+                    np.linalg.norm(candidate.translation - selected.translation)
+                )
+                relative = candidate.rotation_matrix.T @ selected.rotation_matrix
+                cosine = float(np.clip((np.trace(relative) - 1.0) * 0.5, -1.0, 1.0))
+                angle = float(np.arccos(cosine))
+                if translation_delta < translation_thresh_m and angle < rotation_thresh_rad:
+                    duplicate = True
+                    break
+            if not duplicate:
+                keep.append(index)
+        print(f"[G] Native NMS unavailable ({exc}); using CPU NMS: {len(grasps)} -> {len(keep)}")
+        return ranked[np.asarray(keep, dtype=np.int64)]
+
+
 def select_best_grasp(grasps: GraspGroup) -> Optional[Grasp]:
     if len(grasps) == 0:
         return None
-    ranked = GraspGroup(grasps.grasp_group_array.copy())
-    try:
-        ranked = ranked.nms()
-    except Exception as exc:
-        print(f"[WARN] GraspNet NMS skipped: {exc}")
+    ranked = nms_grasp_group(grasps)
     ranked.sort_by_score()
     return ranked[0] if len(ranked) > 0 else None
 
@@ -407,14 +438,19 @@ def grasp_to_base_poses(
     allow_parallel_flip: bool = True,
 ) -> tuple[tuple[float, ...], tuple[float, ...], tuple[float, ...]]:
     if tcp_convention == "rars01" and T_grasp_tcp is not None:
-        return transform_grasp_frame_to_tcp_base_with_retreat(
+        if abs(float(insertion_depth_m)) > 1e-12:
+            raise ValueError(
+                "RARS01 End_link targets use GraspNet depth directly; "
+                "insertion_depth_m must be 0"
+            )
+        return transform_graspnet_grasp_to_end_link_base_with_retreat(
             np.asarray(grasp.translation, dtype=np.float64),
             np.asarray(grasp.rotation_matrix, dtype=np.float64),
+            float(grasp.depth),
             T_cam2base,
             T_grasp_tcp,
             pregrasp_offset_m,
             retreat_offset_m,
-            insertion_depth_m,
             allow_parallel_flip,
         )
     rotation_fn = (
