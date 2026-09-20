@@ -45,7 +45,7 @@ class OrbbecCamera:
         self.pipeline = Pipeline()
         config = None
 
-        # The reBot driver selected arbitrary color/depth profiles and then
+        # The earlier camera driver selected arbitrary color/depth profiles and then
         # forced HW_MODE. Gemini 336 rejects such a pair with:
         # "Current stream profile is not support hardware d2c process".
         # The official Orbbec sample first asks the device for depth profiles

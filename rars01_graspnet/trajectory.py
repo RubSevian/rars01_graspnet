@@ -28,7 +28,7 @@ def minimum_jerk_samples(start, target, duration_s: float, rate_hz: float,
 
 def cartesian_geodesic_samples(start: np.ndarray, target: np.ndarray,
                                duration_s: float, rate_hz: float) -> tuple[np.ndarray, ...]:
-    """Minimum-jerk translation plus SO(3) geodesic rotation, like reBot move_to_traj."""
+    """Minimum-jerk translation plus SO(3) geodesic rotation."""
     start = np.asarray(start, dtype=np.float64).reshape(4, 4)
     target = np.asarray(target, dtype=np.float64).reshape(4, 4)
     if duration_s <= 0 or rate_hz <= 0:

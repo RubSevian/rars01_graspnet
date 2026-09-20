@@ -11,7 +11,12 @@ from rars01_graspnet.trajectory import (
 )
 
 
-URDF = Path(__file__).resolve().parents[2] / "rars01_description" / "urdf" / "rars01.urdf"
+URDF = (
+    Path(__file__).resolve().parents[2]
+    / "rars01_description"
+    / "urdf"
+    / "rars01_control.urdf"
+)
 
 
 def test_minimum_jerk_reaches_target_and_limits_steps():

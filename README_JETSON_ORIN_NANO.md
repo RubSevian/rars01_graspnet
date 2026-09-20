@@ -13,8 +13,7 @@
 RARS_sdk_grasp_net/
 ├── rars01_graspnet/
 ├── rars_arm_sdk/
-├── rars01_description/
-└── reBotArm_control_py/       # получить из исходного проекта reBot
+└── rars01_description/
 ```
 
 Также потребуются:
@@ -149,17 +148,14 @@ sudo udevadm control --reload && sudo udevadm trigger
 .venv/bin/python scripts/check_camera.py --config config/jetson_orin_nano.yaml
 ```
 
-## 5. reBot и RARS SDK
+## 5. Pinocchio и RARS SDK
 
-Установите имеющийся локально reBot пакет:
+Контроллер и математика входят в проект. Установите нативные зависимости:
 
 ```bash
 uv pip install --python .venv/bin/python \
   'numpy==2.3.5' 'scipy==1.18.0' 'pin==3.9.0' \
-  'cmeel-urdfdom==4.0.1' 'cmeel-tinyxml2==10.0.0' \
-  'motorbridge>=0.4.9' 'meshcat>=0.3.2'
-uv pip install --python .venv/bin/python -e \
-  ../reBot-DevArm-Grasp/sdk/reBotArm_control_py
+  'cmeel-urdfdom==4.0.1' 'cmeel-tinyxml2==10.0.0'
 ```
 
 Перед любым запуском, который использует робота, добавьте библиотеки Pinocchio
@@ -169,8 +165,7 @@ uv pip install --python .venv/bin/python -e \
 export LD_LIBRARY_PATH="$PWD/.venv/lib/python3.12/site-packages/cmeel.prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 ```
 
-Если репозиторий расположен в другом месте, замените путь в команде и укажите
-его в `robot.repo_root` файла `config/default.yaml`.
+Внешний Python-пакет управления рукой не требуется; `robot.repo_root` удалён.
 
 Соберите модуль RARS SDK:
 

@@ -10,10 +10,10 @@ import numpy as np
 
 try:
     from .common_utils import detection_count, tensor_to_numpy
-    from .transforms import grasp_axes_to_rebot_tcp_rotation
+    from .transforms import grasp_axes_to_tcp_rotation
 except ImportError:  
     from common_utils import detection_count, tensor_to_numpy
-    from transforms import grasp_axes_to_rebot_tcp_rotation
+    from transforms import grasp_axes_to_tcp_rotation
 
 
 @dataclass
@@ -196,7 +196,7 @@ def estimate_grasp(
         )
 
     rotation = np.column_stack([grip_axis, open_axis, approach]).astype(np.float32)
-    tcp_rotation = grasp_axes_to_rebot_tcp_rotation(rotation[:, 0], rotation[:, 1], rotation[:, 2]).astype(np.float32)
+    tcp_rotation = grasp_axes_to_tcp_rotation(rotation[:, 0], rotation[:, 1], rotation[:, 2]).astype(np.float32)
 
     jaw_width_m = float(np.linalg.norm(_pixel_vec_to_3d(short_dir_uv * grasp_span_px, z_m, K)))
     object_length_m = float(np.linalg.norm(_pixel_vec_to_3d(short_dir_uv * long_len_px, z_m, K)))

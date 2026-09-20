@@ -34,7 +34,7 @@ def test_jetson_config_inherits_robot_and_overrides_memory_profile():
         "grasp_orientation_tolerance_deg": 3.0,
         "velocity_tolerance_deg_s": 2.0,
         "settle_time_s": 0.2,
-        "timeout_margin_s": 1.5,
+        "timeout_margin_s": 5.5,
         "max_feedback_age_s": 0.10,
     }
     selection = config["grasp_pipeline"]["grasp"]["candidate_selection"]
@@ -68,7 +68,7 @@ def test_jetson_robot_kinematics_uses_nested_rars01_settings():
         load_config(root / "config" / "jetson_orin_nano.yaml")
     )
 
-    assert urdf.name == "rars01.urdf"
+    assert urdf.name == "rars01_control.urdf"
     assert base_frame == "base_link"
     assert tcp_frame == "End_link"
 

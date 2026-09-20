@@ -60,14 +60,14 @@ from graspnetAPI import Grasp, GraspGroup  # noqa: E402
 try:
     from .transforms import (
         graspnet_rotation_to_rars_tcp_rotation,
-        graspnet_rotation_to_rebot_tcp_rotation,
+        graspnet_rotation_to_tcp_rotation,
         transform_graspnet_grasp_to_end_link_base_with_retreat,
         transform_grasp_pose_to_base_with_retreat,
     )
 except ImportError:
     from transforms import (
         graspnet_rotation_to_rars_tcp_rotation,
-        graspnet_rotation_to_rebot_tcp_rotation,
+        graspnet_rotation_to_tcp_rotation,
         transform_graspnet_grasp_to_end_link_base_with_retreat,
         transform_grasp_pose_to_base_with_retreat,
     )
@@ -433,7 +433,7 @@ def grasp_to_base_poses(
     pregrasp_offset_m: float,
     retreat_offset_m: float,
     insertion_depth_m: float = 0.0,
-    tcp_convention: str = "rebot",
+    tcp_convention: str = "rars01",
     T_grasp_tcp: Optional[np.ndarray] = None,
     allow_parallel_flip: bool = True,
 ) -> tuple[tuple[float, ...], tuple[float, ...], tuple[float, ...]]:
@@ -456,7 +456,7 @@ def grasp_to_base_poses(
     rotation_fn = (
         graspnet_rotation_to_rars_tcp_rotation
         if tcp_convention == "rars01"
-        else graspnet_rotation_to_rebot_tcp_rotation
+        else graspnet_rotation_to_tcp_rotation
     )
     return transform_grasp_pose_to_base_with_retreat(
         np.asarray(grasp.translation, dtype=np.float64),

@@ -35,13 +35,15 @@ detection:
   iou_threshold: 0.45 # IoU порог NMS YOLO.
 
 robot:
-  # Драйвер моторов: rars01 или исходный rebot.
+  # Драйвер моторов RARS01; transport использует RARS SDK.
   backend: rars01
   rars01:
     # Каталог собранного Python-модуля RARS SDK.
     sdk_python_path: ../rars_arm_sdk/build-python
-    # Неизменённая модель RARS01 для исходных IK и Cartesian-траекторий reBot.
-    urdf_path: ../rars01_description/urdf/rars01.urdf
+    # Модель только кинематической цепи руки с корнем base_link.
+    # Полная ROS2/Go2-модель rars01.urdf начинается с arm_mount_link и поэтому
+    # не используется для IK: иначе все цели захвата сместятся в систему крепления.
+    urdf_path: ../rars01_description/urdf/rars01_control.urdf
     end_effector_frame: End_link # TCP кадр URDF для IK и hand-eye.
     # Последовательный порт и скорость контроллера RARS01.
     port: /dev/ttyACM0 # USB CDC порт STM32.
@@ -75,21 +77,7 @@ robot:
     command_rate_hz: 100.0 # Частота потока команд; плавность траектории задаётся также planning/safety.
     max_grasp_width_m: 0.100 # Полезное раскрытие между внутренними краями губок, м.
     max_grasp_depth_m: 0.080 # Максимальная полезная глубина захвата, м.
-  # Путь к исходному reBotArm_control_py; null использует sdk/reBotArm_control_py.
-  repo_root: null
   gripper:
-    dm:
-      angle_open: 5.0 # Только исходный DM-гриппер: угол, рад.
-      counterclockwise: true # Только DM: инверсия направления.
-      tau_max: 1.5 # Только DM: лимит момента, Нм.
-      close_torque: 1.7 # Только DM: порог контакта, Нм.
-      default_force: 0.30 # Только DM: момент закрытия, Нм.
-    rs:
-      angle_open: 5.0 # Только исходный RS-гриппер: угол, рад.
-      counterclockwise: false # Только RS: инверсия направления.
-      tau_max: 1.5 # Только RS: лимит момента, Нм.
-      close_torque: 1.5 # Только RS: порог контакта, Нм.
-      default_force: 0.30 # Только RS: момент закрытия, Нм.
     # RARS01: симметричный параллельный гриппер с рычажным приводом.
     rars01:
       # Безопасный предел хода мотора, рад; формула использует 0.945832 рад при 100 мм.

@@ -11,7 +11,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from drivers.robot.grasp_driver import GraspDriver, RarsRebotArm  # noqa: E402
+from drivers.robot.grasp_driver import GraspDriver, RarsArmAdapter  # noqa: E402
 from rars01_graspnet.config import load_config  # noqa: E402
 from rars01_graspnet.gripper_geometry import RarsGripperGeometry  # noqa: E402
 
@@ -62,16 +62,15 @@ def main() -> int:
         return 1
 
     robot_cfg = config["robot"]
-    arm = RarsRebotArm(robot_cfg, PROJECT_ROOT)
+    arm = RarsArmAdapter(robot_cfg, PROJECT_ROOT)
     try:
-        from reBotArm_control_py.controllers import RebotArmEndPose
+        from rars01_graspnet.pose_controller import RarsPoseController
 
-        controller = RebotArmEndPose(
-            arm, dt=1.0 / arm.rate, arm_control_mode="posvel", use_gravity_ff=False
+        controller = RarsPoseController(
+            arm, dt=1.0 / arm.rate, arm_control_mode="posvel"
         )
         driver = GraspDriver(
             arm, controller, gripper_config=robot_cfg.get("gripper"),
-            repo_root=robot_cfg.get("repo_root"),
         )
         # Keep motor 7 passive while startup feedback settles.  Never infer
         # the closed zero from transient feedback: it is an explicit config.

@@ -11,7 +11,9 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def _kinematics():
     return RarsKinematics(
-        ROOT / "rars01_description/urdf/rars01.urdf", "base_link", "End_link"
+        ROOT / "rars01_description/urdf/rars01_control.urdf",
+        "base_link",
+        "End_link",
     )
 
 

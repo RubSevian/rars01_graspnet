@@ -138,19 +138,19 @@ def canonicalize_parallel_gripper_tcp_rotation(R: np.ndarray) -> np.ndarray:
     return alt if abs(alt_roll) < abs(roll) else R
 
 
-def grasp_axes_to_rebot_tcp_rotation(
+def grasp_axes_to_tcp_rotation(
     grip_axis: np.ndarray,
     open_axis: np.ndarray,
     approach_axis: np.ndarray,
 ) -> np.ndarray:
-    """Map grasp-frame axes to the reBotArm TCP frame.
+    """Map grasp-frame axes to the parallel-gripper TCP frame.
 
     Vision grasp convention:
       - X = grip_axis
       - Y = open_axis
       - Z = approach_axis
 
-    reBotArm TCP convention:
+    parallel-gripper TCP convention:
       - X = tool-forward / approach direction
       - Y = gripper opening direction
       - Z = right-handed completion
@@ -182,12 +182,12 @@ def grasp_axes_to_rebot_tcp_rotation(
     return R
 
 
-def grasp_rotation_to_rebot_tcp_rotation(grasp_rotation: np.ndarray) -> np.ndarray:
-    """Convert a [grip, open, approach] rotation matrix to reBotArm TCP rotation."""
+def grasp_rotation_to_tcp_rotation(grasp_rotation: np.ndarray) -> np.ndarray:
+    """Convert a [grip, open, approach] rotation matrix to parallel-gripper TCP rotation."""
     R = np.asarray(grasp_rotation, dtype=np.float64)
     if R.shape != (3, 3):
         raise ValueError(f"grasp_rotation must be (3, 3), got {R.shape}")
-    return grasp_axes_to_rebot_tcp_rotation(R[:, 0], R[:, 1], R[:, 2])
+    return grasp_axes_to_tcp_rotation(R[:, 0], R[:, 1], R[:, 2])
 
 
 def _make_grasp_base_transform(
@@ -338,8 +338,8 @@ def transform_graspnet_grasp_to_end_link_base_with_retreat(
     )
 
 
-def graspnet_rotation_to_rebot_tcp_rotation(grasp_rotation: np.ndarray) -> np.ndarray:
-    """Convert a GraspNet rotation_matrix to reBotArm TCP rotation."""
+def graspnet_rotation_to_tcp_rotation(grasp_rotation: np.ndarray) -> np.ndarray:
+    """Convert a GraspNet rotation_matrix to parallel-gripper TCP rotation."""
     R = np.asarray(grasp_rotation, dtype=np.float64)
     if R.shape != (3, 3):
         raise ValueError(f"grasp_rotation must be (3, 3), got {R.shape}")

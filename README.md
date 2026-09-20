@@ -4,19 +4,20 @@
 YOLOE и GraspNet. Камера установлена на руке; положение камеры относительно
 `End_link` определяется eye-in-hand калибровкой ArUco без изменения URDF.
 
-Основной рабочий сценарий перенесён из `reBot-DevArm-Grasp` и адаптирован под:
+Основной рабочий сценарий рассчитан на:
 
 - семь моторов RARS SDK (шесть суставов и гриппер);
-- неизменённый `rars01.urdf`;
+- отдельную control-модель `rars01_control.urdf` с корнем `base_link`;
 - Orbbec Gemini 336 с автоматическим fallback с hardware D2C на software align;
-- текущий гриппер RARS01, раскрывающийся в плоскости `XZ`;
+- текущий параллельный гриппер RARS01 с осью раскрытия Y в End_link;
 - выбор захвата `graspnet` или `central_mask`;
 - вертикальный заход сверху или исходный заход по лучу камеры;
 - Cartesian IK-путь, выбор из 20 grasp-кандидатов и feedback-проверку End_link
   перед закрытием гриппера.
 
-Будущая замена механики гриппера на конструкцию reBot описана в
-[`FUTURE_REBOT_GRIPPER.md`](FUTURE_REBOT_GRIPPER.md).
+Геометрия и управление текущим гриппером описаны в [`GRIPPER.md`](GRIPPER.md).
+План проверки самоколлизий и столкновений с Go2:
+[`GO2_COLLISION_PLAN.md`](GO2_COLLISION_PLAN.md).
 
 Для Jetson Orin Nano 8 GB с JetPack 7.2 используйте отдельную пошаговую
 инструкцию: [`README_JETSON_ORIN_NANO.md`](README_JETSON_ORIN_NANO.md).
@@ -28,7 +29,9 @@ calibration/                 Python-код hand-eye/Aruco
 config/default.yaml          основной конфиг робота и захвата
 config/calibration/          intrinsics и текущая hand-eye матрица
 drivers/camera/              Gemini 336 и RealSense
-drivers/robot/               адаптер RARS01 к алгоритмам reBot и гриппер
+drivers/robot/               RARS SDK transport, feedback и гриппер
+rars01_graspnet/pinocchio_math.py локальные FK/IK и SE(3) траектории
+rars01_graspnet/pose_controller.py локальный контроллер POS/VEL и Home
 models/                      локальные веса YOLO и GraspNet
 scripts/grasp.py             основной запуск захвата
 scripts/collect_handeye_eih.py автоматическая eye-in-hand калибровка
@@ -40,15 +43,29 @@ utils/                       YOLO, GraspNet, преобразования и в�
 не переносят между компьютерами. На существующей машине продолжайте использовать
 его через `uv run`; `uv.lock` фиксирует Python-зависимости.
 
+### Поддерживаемые сценарии после рефакторинга
+
+- `scripts/grasp.py` — основной захват; `scripts/main.py` перенаправляет в него.
+- `scripts/collect_handeye_eih.py` — автоматическая калибровка, 50 исходных поз.
+- `scripts/check_gripper_linkage.py` — расчёт раскрытия и отдельный аппаратный
+  тест только при явном выборе выполнения.
+
+Ручное ведение с компенсацией гравитации (`--manual`) не перенесено;
+команда завершается до подключения оборудования. `scripts/set.py` также
+завершается без движения: отдельный pick-and-place ещё не реализован.
+Старые диагностические сценарии, включая `scripts/grasp_once_demo.py`,
+не являются заменой `grasp.py`: часть использует прежнюю схему YAML.
+Перечень необходимых доработок и результаты офлайн-проверок находятся в
+[`GO2_COLLISION_PLAN.md`](GO2_COLLISION_PLAN.md).
+
 ## Внешние репозитории
 
 Они не копируются внутрь данного Git-репозитория:
 
 1. `rars_arm_sdk` — обмен с моторами и модуль `rars_arm_py`;
-2. `rars01_description` — `urdf/rars01.urdf` и meshes;
-3. `reBotArm_control_py` — Pinocchio IK и исходный Cartesian/minimum-jerk
-   контроллер;
-4. `graspnet-baseline` и `graspnetAPI` — нейросеть и API GraspNet.
+2. `rars01_description` — полная ROS2-модель `urdf/rars01.urdf`, модель
+   управления `urdf/rars01_control.urdf` и meshes;
+3. `graspnet-baseline` и `graspnetAPI` — нейросеть и API GraspNet.
 
 Текущая рабочая раскладка:
 
@@ -56,14 +73,12 @@ utils/                       YOLO, GraspNet, преобразования и в�
 RARS_sdk_grasp_net/
 ├── rars01_graspnet/
 ├── rars_arm_sdk/
-├── rars01_description/
-└── reBot-DevArm-Grasp/sdk/reBotArm_control_py/
+└── rars01_description/
 ```
 
-Драйвер автоматически ищет reBot-контроллер также в переносимом варианте
-`rars01_graspnet/sdk/reBotArm_control_py` и в соседнем
-`../reBotArm_control_py`. Явный путь можно задать в
-`robot.repo_root` файла `config/default.yaml`.
+FK/IK и контроллер позы входят в этот проект. Внешний Python-пакет
+управления рукой не требуется. SDK, описание робота и нейросети остаются
+явными зависимостями.
 
 ## Существующее окружение
 
@@ -83,11 +98,12 @@ uv python install 3.10
 uv sync --python 3.10 --extra camera --extra robot --extra vision --extra dev
 ```
 
-После этого установите reBot-контроллер в то же окружение, например для текущей
-структуры workspace:
+Pinocchio устанавливается отдельно как нативная зависимость. Для desktop
+с текущим NumPy 2.3 используется следующий набор; для Jetson см. отдельный README:
 
 ```bash
-uv pip install -e ../reBot-DevArm-Grasp/sdk/reBotArm_control_py
+uv pip install 'pin==3.9.0' 'cmeel-urdfdom==4.0.1' 'cmeel-tinyxml2==10.0.0'
+uv run python -c "import pinocchio; print(pinocchio.__version__)"
 ```
 
 ## RARS SDK
@@ -110,8 +126,12 @@ uv run python -c "import sys; sys.path.insert(0, '../rars_arm_sdk/build-python')
 robot:
   rars01:
     sdk_python_path: ../rars_arm_sdk/build-python
-    urdf_path: ../rars01_description/urdf/rars01.urdf
+    urdf_path: ../rars01_description/urdf/rars01_control.urdf
 ```
+
+Полная модель начинается с `arm_mount_link`, но захват намеренно загружает
+`rars01_control.urdf` с корнем `base_link`. Поэтому существующие координаты
+захвата и hand-eye калибровка не получают смещение крепления.
 
 ## Orbbec Gemini 336
 
@@ -206,7 +226,7 @@ config/calibration/orbbec_gemini2/hand_eye.npz
 
 ## Захват банана
 
-Сначала безопасный dry-run:
+Проверка выбора захвата (рука при этом двигается в ready):
 
 ```bash
 uv run python scripts/grasp.py \

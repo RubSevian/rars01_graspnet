@@ -59,8 +59,7 @@ from drivers.camera import make_camera  # noqa: E402
 from drivers.robot.grasp_driver import (  # noqa: E402
     GRIPPER_MAX_DISTANCE_M,
     GraspDriver,
-    RarsRebotArm,
-    selected_arm_config,
+    RarsArmAdapter,
 )
 import utils.graspnet_utils as graspnet_utils  # noqa: E402
 from utils.graspnet_worker import GraspNetWorker  # noqa: E402
@@ -73,7 +72,7 @@ from utils.ordinary_grasp import (  # noqa: E402
 from utils.transforms import (  # noqa: E402
     canonicalize_parallel_gripper_tcp_rotation,
     graspnet_rotation_to_rars_tcp_rotation,
-    graspnet_rotation_to_rebot_tcp_rotation,
+    graspnet_rotation_to_tcp_rotation,
     pose6d_to_mat4,
     rotation_matrix_to_euler_zyx,
 )
@@ -98,12 +97,12 @@ def _wait_motion(controller: Any, duration: float, extra: float = 0.6) -> None:
         thread.join(timeout=duration + extra + 2.0)
     else:
         time.sleep(duration + extra)
-    # RarsRebotArm deliberately executes its 100 Hz callback in a background
+    # RarsArmAdapter deliberately executes its 100 Hz callback in a background
     # thread.  Surface its exception immediately: otherwise the main UI keeps
     # printing the remaining grasp steps after the SDK has stopped commands,
     # which lets the STM watchdog disable the motors without the actual cause
     # appearing in the terminal log.
-    transport = getattr(controller, "rebotarm", None)
+    transport = getattr(controller, "arm", None)
     failure = getattr(transport, "_failure", None)
     if failure is not None:
         raise RuntimeError(f"RARS01 control loop failed: {failure}") from failure
@@ -141,7 +140,7 @@ def _wait_rars_end_link(
     last_log: Optional[tuple[Any, ...]] = None
 
     while time.monotonic() < deadline:
-        transport = getattr(controller, "rebotarm", None)
+        transport = getattr(controller, "arm", None)
         failure = getattr(transport, "_failure", None)
         if failure is not None:
             print(f"[Feedback/{label}] ABORT transport error: {failure}")
@@ -222,9 +221,10 @@ def _wait_rars_end_link(
     return False
 
 
-def _move_ready(controller: Any, ready_cfg: dict[str, Any]) -> None:
+def _move_ready(controller: Any, ready_cfg: dict[str, Any]) -> bool:
+    """Move to ready and report an IK/path creation failure to the caller."""
     duration = float(ready_cfg.get("duration", 3.0))
-    controller.move_to_traj(
+    started = controller.move_to_traj(
         x=float(ready_cfg.get("x", 0.25)),
         y=float(ready_cfg.get("y", 0.0)),
         z=float(ready_cfg.get("z", 0.35)),
@@ -233,7 +233,11 @@ def _move_ready(controller: Any, ready_cfg: dict[str, Any]) -> None:
         yaw=float(ready_cfg.get("yaw", 0.0)),
         duration=duration,
     )
+    if not started:
+        print("[Robot] Ready trajectory was not started")
+        return False
     _wait_motion(controller, duration)
+    return True
 
 
 @dataclass(frozen=True)
@@ -270,15 +274,14 @@ class IkChecker:
         position_tolerance_m: float = 0.010,
         orientation_tolerance_rad: float = np.deg2rad(5.0),
     ) -> None:
-        from reBotArm_control_py.kinematics import (
+        from rars01_graspnet.pinocchio_math import (
             compute_fk,
             get_end_effector_frame_id,
-            load_robot_model,
             pad_q_for_model,
             pos_rot_to_se3,
             solve_ik,
         )
-        from reBotArm_control_py.kinematics.inverse_kinematics import IKParams
+        from rars01_graspnet.pinocchio_math import IKParams
 
         self._arm = arm
         self._arm_group = arm.groups.get("arm")
@@ -289,8 +292,7 @@ class IkChecker:
         self._compute_fk = compute_fk
         self._pos_rot_to_se3 = pos_rot_to_se3
         self._solve_ik = solve_ik
-        load_arm_model = getattr(arm, "load_kinematic_model", None)
-        self._model = load_arm_model() if load_arm_model is not None else load_robot_model()
+        self._model = arm.load_kinematic_model()
         self._end_frame_id = get_end_effector_frame_id(self._model)
         self._params = IKParams(max_iter=200, tolerance=1e-4, step_size=0.5, damping=1e-6)
         self._retry_count = max(0, int(retry_count))
@@ -574,15 +576,14 @@ def _execute_grasp(
         _wait_motion(controller, retreat_duration)
 
     print("[Grasp] Return ready")
-    _move_ready(controller, ready_cfg)
-    return ok
+    return _move_ready(controller, ready_cfg) and ok
 
 
 def _print_grasp(grasp: Grasp, robot_backend: str) -> None:
     rotation_fn = (
         graspnet_rotation_to_rars_tcp_rotation
         if robot_backend == "rars01"
-        else graspnet_rotation_to_rebot_tcp_rotation
+        else graspnet_rotation_to_tcp_rotation
     )
     tcp_rotation = canonicalize_parallel_gripper_tcp_rotation(rotation_fn(grasp.rotation_matrix))
     print("\n[G] Best GraspNet grasp:")
@@ -918,13 +919,16 @@ def _select_executable_grasp(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="GraspNet/central-mask robot grasp demo")
     parser.add_argument("--config", default=str(PROJECT_ROOT / "config" / "default.yaml"))
-    parser.add_argument("--robot-backend", choices=("rebot", "rars01"), default=None)
+    parser.add_argument("--robot-backend", choices=("rars01",), default=None)
     parser.add_argument(
         "--checkpoint",
         default=None,
         help="GraspNet checkpoint; default is graspnet.checkpoint from YAML",
     )
-    parser.add_argument("--dry-run", action="store_true", help="estimate only; do not move the arm")
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="skip grasp execution; Home -> ready is still performed",
+    )
     parser.add_argument("--camera-type", choices=("realsense_d435i", "realsense_d405", "orbbec_gemini2"), default=None)
     parser.add_argument("--width", type=int, default=None)
     parser.add_argument("--height", type=int, default=None)
@@ -964,7 +968,7 @@ def main() -> int:
     cfg = configure_camera(load_config(Path(args.config)), args)
 
     robot_cfg = cfg.get("robot", {})
-    robot_backend = str(args.robot_backend or robot_cfg.get("backend", "rebot")).lower()
+    robot_backend = str(args.robot_backend or robot_cfg.get("backend", "rars01")).lower()
     max_grasp_width_m = (
         float(robot_cfg.get("rars01", {}).get("max_grasp_width_m", 0.100))
         if robot_backend == "rars01" else GRIPPER_MAX_DISTANCE_M
@@ -1073,7 +1077,7 @@ def main() -> int:
     cv2.resizeWindow(window_name, int(cam_cfg.get("color_width", 1280)), int(cam_cfg.get("color_height", 720)))
     print("\n[Keys] G/SPACE=grasp  R=resume  Q/ESC=quit\n")
 
-    rebotarm: Optional[Any] = None
+    arm: Optional[Any] = None
     controller: Optional[Any] = None
     grasp_driver: Optional[GraspDriver] = None
     ik_checker: Optional[IkChecker] = None
@@ -1111,7 +1115,7 @@ def main() -> int:
         print(f"[Pipeline] grasp mode: {grasp_mode}")
 
         print("=== Init robot ===")
-        from reBotArm_control_py.controllers import RebotArmEndPose
+        from rars01_graspnet.pose_controller import RarsPoseController
 
         if robot_backend == "rars01":
             answer = input(
@@ -1120,34 +1124,27 @@ def main() -> int:
             if answer != "START":
                 print("[RARS01] Cancelled before serial or motors were opened")
                 return 0
-            rebotarm = RarsRebotArm(robot_cfg, PROJECT_ROOT)
-            controller = RebotArmEndPose(
-                rebotarm,
+            arm = RarsArmAdapter(robot_cfg, PROJECT_ROOT)
+            controller = RarsPoseController(
+                arm,
                 # Joints 1..6 use the STM POS/VEL profile.  The gripper is
                 # independently kept in MIT by GraspDriver.
-                dt=1.0 / rebotarm.rate,
+                dt=1.0 / arm.rate,
                 arm_control_mode="posvel",
-                use_gravity_ff=False,
             )
             mode_name = "posvel arm + mit gripper (RARS transport)"
         else:
-            from reBotArm_control_py.actuator import RebotArm
-
-            selected = selected_arm_config(robot_cfg.get("repo_root"))
-            rebotarm = RebotArm()
-            controller = RebotArmEndPose(rebotarm, arm_control_mode=selected.controller_mode)
-            mode_name = selected.controller_mode
+            raise ValueError("Only robot.backend: rars01 is supported")
 
         grasp_driver = GraspDriver(
-            rebotarm,
+            arm,
             controller,
             gripper_config=robot_cfg.get("gripper"),
-            repo_root=robot_cfg.get("repo_root"),
         )
         grasp_driver.start()
         robot_ready = True
         ik_checker = IkChecker(
-            rebotarm,
+            arm,
             retry_count=ik_retry_count,
             position_tolerance_m=float(cartesian_ik_cfg["ik_position_tolerance_m"]),
             orientation_tolerance_rad=np.deg2rad(
@@ -1156,7 +1153,8 @@ def main() -> int:
         )
         print(f"[Robot] mode: {mode_name}")
         print("[Robot] Move ready")
-        _move_ready(controller, ready_cfg)
+        if not _move_ready(controller, ready_cfg):
+            raise RuntimeError("Could not start the ready trajectory")
 
         while True:
             grasp_driver.check_health()
@@ -1442,13 +1440,13 @@ def main() -> int:
         try:
             if controller is not None and getattr(controller, "_running", False):
                 controller.end()
-            elif rebotarm is not None:
-                rebotarm.disconnect()
+            elif arm is not None:
+                arm.disconnect()
         except Exception as exc:
             print(f"[Exit] {exc}")
             try:
-                if rebotarm is not None:
-                    rebotarm.disconnect()
+                if arm is not None:
+                    arm.disconnect()
             except Exception as disconnect_exc:
                 print(f"[Exit] disconnect: {disconnect_exc}")
         try:

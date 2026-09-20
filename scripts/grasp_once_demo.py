@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RARS01 port of reBot-DevArm-Grasp/scripts/grasp.py's one-shot pipeline."""
+"""Legacy single-frame RARS01 demo; the maintained workflow is scripts/grasp.py."""
 from __future__ import annotations
 
 import argparse
@@ -99,7 +99,7 @@ def main() -> None:
         frame_index = 0
         selected = None
         quit_requested = False
-        window = "RARS01 - reBot-style grasp"
+        window = "RARS01 - single-frame grasp"
         cv2.namedWindow(window, cv2.WINDOW_NORMAL)
         print("[Keys] G/Space=infer and select executable grasp | R=resume | Q/Esc=home")
 
@@ -266,7 +266,7 @@ def main() -> None:
 
 
 def _move_to_traj(robot, kinematics, state, target, *, duration_s, common):
-    """RARS SDK equivalent of RebotArmEndPose.move_to_traj()."""
+    """Execute a Cartesian target using the RARS SDK."""
     points = track_cartesian_trajectory(
         kinematics, np.asarray(state, dtype=np.float64)[:6], target,
         duration_s=duration_s, **common,
@@ -303,7 +303,7 @@ def _select_executable(candidates, T_camera_base, kinematics, reference_joints,
             candidate.pose.position_m, candidate.pose.rotation
         )
         T_grasp_base = _canonical_rars_grasp(T_raw, opening.T_grasp_End_link)
-        # Same sign and order as reBot transform_grasp_pose_to_base_with_retreat:
+        # Preserve the transform_grasp_pose_to_base_with_retreat convention:
         # insert along tool +X first, then compute pregrasp and retreat from it.
         T_grasp_base[:3, 3] += insertion_depth * T_grasp_base[:3, 0]
         T_pregrasp_base = pregrasp_transform(T_grasp_base, pregrasp_distance)
@@ -343,7 +343,7 @@ def _select_executable(candidates, T_camera_base, kinematics, reference_joints,
 
 
 def _canonical_rars_grasp(T_grasp_base, T_grasp_End_link):
-    """Same Rx(pi) canonicalization as reBot, after the RARS axis mapping."""
+    """Rx(pi) canonicalization after mapping the RARS tool axes."""
     flip = np.diag([1.0, -1.0, -1.0])
     alternatives = []
     for branch in (np.eye(3), flip):

@@ -1,19 +1,8 @@
-"""
-Eye-in-hand calibration data collection and solving (Gemini2 + reBotArm).
+"""Automatic eye-in-hand calibration: RARS01, RGB-D camera and ArUco.
 
-Modes:
-  Auto mode (default): the arm traverses 50 preset poses, captures samples
-                       when ArUco is detected, and skips timed-out poses.
-  Manual mode (--manual): gravity compensation lets the user move the arm by
-                          hand. Release the arm to lock it, then press Enter.
-
-Setup:
-  The camera is mounted on the end effector.
-  The ArUco marker is fixed on the work surface.
-
-Usage:
-    python scripts/collect_handeye_eih.py           # auto mode
-    python scripts/collect_handeye_eih.py --manual  # manual gravity mode
+Traverse the validated baseline set of 50 Cartesian poses using POS/VEL.
+Save samples and the camera-to-End_link transform under config/calibration.
+Manual gravity-guided motion requires a separate RARS01 implementation.
 """
 
 import os
@@ -31,9 +20,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 os.environ.setdefault("QT_QPA_FONTDIR", "/usr/share/fonts/truetype")
 
 from drivers.camera import make_camera
-from drivers.robot.grasp_driver import GraspDriver, RarsRebotArm, selected_arm_config
-from reBotArm_control_py.actuator import RebotArm
-from reBotArm_control_py.controllers import RebotArmEndPose
+from drivers.robot.grasp_driver import GraspDriver, RarsArmAdapter
+from rars01_graspnet.pose_controller import RarsPoseController
 from calibration.hand_eye import CalibMode, HandEyeCalibrator
 from utils.camera_utils import load_config
 from utils.transforms import rotation_matrix_to_euler_zyx
@@ -136,173 +124,17 @@ def make_input_thread(line_queue: queue.Queue) -> threading.Thread:
 
 
 # ==========================================
-# Gravity compensation controller for manual mode.
-# ==========================================
-class GravityCompController:
-    """MIT mode with end-effector velocity locking for hand-guided poses.
-
-    Reference: reBotArm_control_py/example/10_gravity_compensation_lock.py
-    """
-    KP = 8.0
-    KD = 1.5
-    V_THRESH  = 0.04   # End-effector linear velocity threshold (m/s)
-    W_THRESH  = 0.08   # End-effector angular velocity threshold (rad/s)
-
-    def __init__(self, arm: RebotArm) -> None:
-        from reBotArm_control_py.dynamics import compute_generalized_gravity
-        from reBotArm_control_py.kinematics import (
-            load_robot_model, get_end_effector_frame_id,
-        )
-        from reBotArm_control_py.kinematics.robot_model import pad_q_for_model
-        import pinocchio as pin
-
-        self._compute_gravity = compute_generalized_gravity
-        self._pad_q_for_model = pad_q_for_model
-        self._pin = pin
-
-        self._arm = arm
-        if not self._arm.has_gripper:
-            raise ValueError(
-                "Hardware config is missing groups.gripper. "
-                "Enable the gripper group in the selected hardware YAML under "
-                "reBotArm_control_py/config."
-            )
-        load_arm_model = getattr(arm, "load_kinematic_model", None)
-        self._model = load_arm_model() if load_arm_model is not None else load_robot_model()
-        self._data  = self._model.createData()
-        self._ee_id = get_end_effector_frame_id(self._model)
-
-        self._n = None          # Joint count, set after connect.
-        self._q_target = None
-        self._integral = None
-        self._gc_running = threading.Event()
-        self._io_lock = threading.RLock()
-
-    def start(self) -> None:
-        """Connect, enable, set MIT mode, and start gravity compensation."""
-        self._arm.connect()
-        print("[GravityComp] Connected")
-
-        self._arm.arm.mode_mit(
-            kp=np.full(self._arm.arm.num_joints, self.KP),
-            kd=np.full(self._arm.arm.num_joints, self.KD),
-        )
-        self._arm.gripper.mode_mit()
-        self._arm.enable_all()
-        print("[GravityComp] Enabled")
-
-        n = self._arm.arm.num_joints
-        self._n = n
-        self._wait_state_valid()
-        with self._io_lock:
-            q0 = self._arm.get_state()[0][:n]
-        self._q_target = q0.copy()
-        self._integral = np.zeros(n)
-
-        print(f"[GravityComp] MIT mode, kp={self.KP} kd={self.KD}. Move the arm by hand.")
-
-        self._gc_running.set()
-        self._arm.start_control_loop(self._worker, rate=self._arm.rate)
-
-    def _wait_state_valid(self, timeout: float = 2.0) -> None:
-        """Wait until all motor feedback is available."""
-        t_end = time.monotonic() + timeout
-        while time.monotonic() < t_end:
-            with self._io_lock:
-                self._arm.get_state()
-                ok = all(
-                    m.get_state() is not None
-                    for m in self._arm._motor_map.values()
-                )
-            if ok:
-                return
-            time.sleep(0.02)
-        raise RuntimeError("[GravityComp] Arm feedback is not ready")
-
-    def safe_home(self) -> None:
-        """Stop gravity compensation, home with an SDK controller, then disconnect."""
-        self._gc_running.clear()
-        try:
-            print("[GravityComp] Homing...")
-            self._arm.stop_control_loop()
-            with self._io_lock:
-                q_now = self._arm.get_state()[0][: self._n]
-                g_now = self._arm.gripper.get_positions()
-
-            ctrl = RebotArmEndPose(
-                self._arm,
-                arm_control_mode="mit",
-                use_gravity_ff=True,
-            )
-            ctrl.set_gripper_target(float(g_now[0]) if g_now.size else 0.0)
-            ctrl._q_target[:] = q_now
-            ctrl.start()
-            ctrl.safe_home()
-            self._arm.stop_control_loop()
-        except Exception as e:
-            print(f"[GravityComp] Homing failed: {e}")
-        try:
-            self._arm.disconnect()
-        except Exception:
-            pass
-        print("[GravityComp] Disconnected")
-
-    def _worker(self, r, dt: float) -> None:
-        if not self._gc_running.is_set():
-            return
-
-        pin = self._pin
-        model, data, ee_id = self._model, self._data, self._ee_id
-        n = self._n
-        KP, KD = self.KP, self.KD
-
-        try:
-            with self._io_lock:
-                q_all, qd_all, _ = r.get_state()
-            q = q_all[:n]
-            qd = qd_all[:n]
-            q_model = self._pad_q_for_model(model, q, n)
-            tau_g = self._compute_gravity(model=model, q=q_model)[:n]
-
-            q_err = self._q_target - q
-            self._integral += q_err
-            np.clip(self._integral, -0.5, 0.5, out=self._integral)
-
-            qd_model = np.zeros(model.nv)
-            qd_model[: min(model.nv, n)] = qd[: min(model.nv, n)]
-            pin.computeJointJacobians(model, data, q_model)
-            pin.updateFramePlacements(model, data)
-            J = pin.getFrameJacobian(model, data, ee_id, pin.ReferenceFrame.WORLD)
-            v = J @ qd_model
-
-            if (np.linalg.norm(v[:3]) > self.V_THRESH or
-                    np.linalg.norm(v[3:]) > self.W_THRESH):
-                self._q_target = q.copy()
-                self._integral *= 0.9
-
-            with self._io_lock:
-                r.arm.send_mit(
-                    pos=self._q_target,
-                    vel=np.zeros(n),
-                    kp=np.full(n, KP),
-                    kd=np.full(n, KD),
-                    tau=tau_g + self._integral,
-                )
-                r.gripper.send_mit(r.gripper.get_positions())
-        except Exception:
-            pass
-
-
-# ==========================================
 # Main flow.
 # ==========================================
 def main():
     parser = argparse.ArgumentParser(description="Eye-in-hand calibration data collection")
     parser.add_argument("--config", default="config/default.yaml")
-    parser.add_argument("--robot-backend", choices=("rebot", "rars01"), default=None)
+    parser.add_argument("--robot-backend", choices=("rars01",), default=None)
     parser.add_argument("--manual", action="store_true",
-                        help="manual mode: gravity compensation; move the arm by hand and press Enter to capture")
+                        help="unsupported: hand-guided gravity mode requires RARS01-specific implementation")
     args = parser.parse_args()
+    if args.manual:
+        parser.error("Manual gravity mode is not supported for RARS01; use automatic calibration")
 
     root = Path(__file__).resolve().parent.parent
     config_path = Path(args.config)
@@ -310,7 +142,7 @@ def main():
         config_path = root / config_path
     cfg = load_config(config_path)
     robot_cfg = cfg.get("robot", {})
-    robot_backend = str(args.robot_backend or robot_cfg.get("backend", "rebot")).lower()
+    robot_backend = str(args.robot_backend or robot_cfg.get("backend", "rars01")).lower()
 
     cam_type   = cfg["camera"]["type"]
     calib_dir  = root / "config" / "calibration" / cam_type
@@ -342,15 +174,13 @@ def main():
     calibrator = HandEyeCalibrator(CalibMode.EYE_IN_HAND, method=he_method)
 
     # Robot.
-    mode_str = "manual (gravity compensation)" if args.manual else f"auto ({len(CALIB_POSES_XYZ)} preset poses)"
-    gc_ctrl: GravityCompController | None = None
-    rebotarm = None
-    controller: RebotArmEndPose | None = None
+    mode_str = f"auto ({len(CALIB_POSES_XYZ)} preset poses)"
+    arm = None
+    controller: RarsPoseController | None = None
     grasp_driver: GraspDriver | None = None
     auto_controller_mode: str | None = None
-    auto_use_gravity_ff = False
     auto = {
-        "enabled": not args.manual,
+        "enabled": True,
         "idx": 0,
         "pose_idx": None,
         "phase": "idle",
@@ -382,64 +212,33 @@ def main():
         sys.exit(1)
 
     try:
-        if robot_backend == "rars01":
-            answer = input(
-                "RARS01: place the arm in zero/home, clear all 50-pose workspace "
-                "and type START: "
-            ).strip()
-            if answer != "START":
-                print("[RARS01] Cancelled before serial or motors were opened")
-                cam.close()
-                return
-            rebotarm = RarsRebotArm(robot_cfg, root)
-        else:
-            rebotarm = RebotArm()
-
-        if args.manual:
-            controller = RebotArmEndPose(rebotarm, arm_control_mode="mit", use_gravity_ff=True)
-            grasp_driver = GraspDriver(
-                rebotarm,
-                controller,
-                gripper_config=robot_cfg.get("gripper"),
-                repo_root=robot_cfg.get("repo_root"),
-            )
-            gc_ctrl = GravityCompController(rebotarm)
-            gc_ctrl.start()
-            print("[Robot] Manual mode ready. Move the arm by hand, then press Enter to capture.")
-        else:
-            if robot_backend == "rars01":
-                # RARS01 arm joints use the hardware POS_VEL mode: the STM32
-                # receives a position target plus the configured velocity cap.
-                # Motor 7 remains MIT and is not moved during calibration.
-                auto_controller_mode = "posvel"
-                mode_name = "pos_vel (RARS position + velocity limit)"
-            else:
-                selected = selected_arm_config(robot_cfg.get("repo_root"))
-                auto_controller_mode = selected.controller_mode
-                mode_name = selected.controller_mode
-            auto_use_gravity_ff = (
-                auto_controller_mode == "mit" and robot_backend != "rars01"
-            )
-            controller = RebotArmEndPose(
-                rebotarm,
-                arm_control_mode=auto_controller_mode,
-                use_gravity_ff=auto_use_gravity_ff,
-            )
-            grasp_driver = GraspDriver(
-                rebotarm,
-                controller,
-                gripper_config=robot_cfg.get("gripper"),
-                repo_root=robot_cfg.get("repo_root"),
-            )
-            grasp_driver.start()
-            print(
-                f"[Robot] Auto mode ready, control mode: {mode_name}. "
-                f"{len(CALIB_POSES_XYZ)} preset poses will be traversed."
-            )
+        if robot_backend != "rars01":
+            raise ValueError("Only robot.backend: rars01 is supported")
+        answer = input(
+            "RARS01: place the arm in zero/home, clear all 50-pose workspace "
+            "and type START: "
+        ).strip()
+        if answer != "START":
+            print("[RARS01] Cancelled before serial or motors were opened")
+            cam.close()
+            return
+        arm = RarsArmAdapter(robot_cfg, root)
+        auto_controller_mode = "posvel"
+        controller = RarsPoseController(
+            arm, dt=1.0 / arm.rate, arm_control_mode=auto_controller_mode,
+        )
+        grasp_driver = GraspDriver(
+            arm, controller, gripper_config=robot_cfg.get("gripper"),
+        )
+        grasp_driver.start()
+        print(
+            f"[Robot] Auto mode ready, control mode: POS/VEL. "
+            f"{len(CALIB_POSES_XYZ)} preset poses will be traversed."
+        )
     except Exception as e:
         try:
-            if rebotarm is not None:
-                rebotarm.disconnect()
+            if arm is not None:
+                arm.disconnect()
         except Exception:
             pass
         try:
@@ -449,10 +248,7 @@ def main():
         print(f"[Robot] Connection failed: {e}")
         sys.exit(1)
 
-    if args.manual:
-        print("[Controls] Enter=capture  c/q=finish and solve  pos=print current TCP pose")
-    else:
-        print("[Controls] Auto traversal and capture  c/q=stop and solve  pos=print current TCP pose")
+    print("[Controls] Auto traversal and capture  c/q=stop and solve  pos=print current TCP pose")
     print()
 
     latest_pose = None
@@ -620,31 +416,18 @@ def main():
 
     def safe_home_and_disconnect() -> None:
         """Return home first, then stop control and disconnect."""
-        if rebotarm is None or auto_controller_mode is None:
+        if arm is None or auto_controller_mode is None:
             return
         try:
             print("[Robot] Homing and disconnecting...")
-            if robot_backend == "rars01" and grasp_driver is not None:
+            if grasp_driver is not None:
                 if not grasp_driver.home_rars(auto_home_duration_s, auto_home_timeout_s):
                     raise RuntimeError("RARS01 did not reach home before timeout")
-            else:
-                rebotarm.stop_control_loop()
-                q_now = rebotarm.get_state()[0][: rebotarm.arm.num_joints]
-                g_now = rebotarm.gripper.get_positions() if rebotarm.has_gripper else np.array([])
-                ctrl = RebotArmEndPose(
-                    rebotarm,
-                    arm_control_mode=auto_controller_mode,
-                    use_gravity_ff=auto_use_gravity_ff,
-                )
-                ctrl.set_gripper_target(float(g_now[0]) if g_now.size else 0.0)
-                ctrl._q_target[:] = q_now
-                ctrl.start()
-                ctrl.safe_home()
-            rebotarm.stop_control_loop()
+            arm.stop_control_loop()
         except Exception as e:
             print(f"[Robot] Homing failed: {e}")
         try:
-            rebotarm.disconnect()
+            arm.disconnect()
         except Exception:
             pass
 
@@ -662,15 +445,8 @@ def main():
             _print_fk()
             return False
 
-        if args.manual and line == "":
-            capture_sample(latest_pose, "manual capture")
-            return False
-
         if line:
-            if args.manual:
-                print("  Manual commands: Enter=capture  c/q=finish and solve  pos=print current TCP pose")
-            else:
-                print("  Auto commands: c/q=finish and solve  pos=print current TCP pose")
+            print("  Auto commands: c/q=finish and solve  pos=print current TCP pose")
         return False
 
     # Main loop.
@@ -694,25 +470,11 @@ def main():
                                 0.55, color, 1, cv2.LINE_AA)
 
                 if pose:
-                    if args.manual:
-                        osd(f"[ID={pose.id}] z={pose.T_marker2cam[2,3]:.3f}m  "
-                            f"samples:{n}  Enter=capture  c/q=finish",
-                            28, (80, 220, 80))
-                    else:
-                        osd(f"[ID={pose.id}] z={pose.T_marker2cam[2,3]:.3f}m  samples:{n}",
-                            28, (80, 220, 80))
+                    osd(f"[ID={pose.id}] z={pose.T_marker2cam[2,3]:.3f}m  samples:{n}",
+                        28, (80, 220, 80))
                 else:
-                    if args.manual:
-                        osd(f"No marker  samples:{n}  move arm to see marker",
-                            28, (80, 80, 220))
-                    else:
-                        osd(f"No marker  samples:{n}",
-                            28, (80, 80, 220))
-
-                if args.manual:
-                    osd("MANUAL: Enter=capture  c/q=finish  pos=print fk", 50, (180, 180, 60))
-                else:
-                    osd(f"AUTO: {auto['status']}", 50, (180, 180, 60))
+                    osd(f"No marker  samples:{n}", 28, (80, 80, 220))
+                osd(f"AUTO: {auto['status']}", 50, (180, 180, 60))
 
                 filled = min(n, 15) * (400 // 15)
                 cv2.rectangle(vis, (10, 70), (10 + filled, 82), (0, 200, 100), -1)
@@ -720,7 +482,7 @@ def main():
                 cv2.putText(vis, f"{n}/15", (10, 95),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
 
-                mode_label = "MANUAL(GravComp)" if args.manual else "AUTO"
+                mode_label = "AUTO"
                 cv2.putText(vis, mode_label, (vis.shape[1] - 200, vis.shape[0] - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 60), 1)
 
@@ -750,9 +512,7 @@ def main():
     finally:
         cv2.destroyAllWindows()
         cam.close()
-        if gc_ctrl is not None:
-            gc_ctrl.safe_home()
-        elif controller is not None:
+        if controller is not None:
             safe_home_and_disconnect()
         compute_and_save(finish_reason)
 

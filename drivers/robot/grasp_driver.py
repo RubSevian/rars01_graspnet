@@ -1,18 +1,7 @@
-"""Small grasp-side helper for reBotArm visual grasping.
+"""RARS01 SDK transport, feedback checks, joint trajectories and gripper control.
 
-The SDK owns arm connection, mode switching, Cartesian planning, gravity
-compensation, and the control loop. This module provides only the extra
-gripper and pose helpers used by the vision workflows.
-
-selected_arm_config(): read the SDK hardware YAML and choose controller mode.
-
-GraspDriver:
-  start(): start SDK control and attach gripper tick handling.
-  open_gripper(): open to a requested jaw distance.
-  grasp(): close with force control and report object contact.
-  release_gripper(): open and return the gripper to closed rest.
-  get_gripper_state(): return cached position, velocity, and torque.
-  get_tcp_pose(): return the current TCP pose as a 4x4 matrix.
+The pose controller owns local FK/IK. This adapter is the only motor interface
+used by grasping and automatic hand-eye calibration.
 """
 
 from __future__ import annotations
@@ -26,14 +15,9 @@ from types import SimpleNamespace
 from typing import Any, Optional
 
 import numpy as np
-import yaml
 
 from rars01_graspnet.gripper_geometry import RarsGripperGeometry
 
-
-_CAMERAWS_ROOT = Path(__file__).resolve().parents[2]
-_REBOT_REPO_NAME = "reBotArm_control_py"
-_DEFAULT_REBOT_REPO = _CAMERAWS_ROOT / "sdk" / _REBOT_REPO_NAME
 
 GRIPPER_MAX_DISTANCE_M = 0.100
 
@@ -58,7 +42,7 @@ def _motor_array(value: Any, name: str) -> np.ndarray:
 
 
 class _RarsMotor:
-    def __init__(self, owner: "RarsRebotArm", index: int) -> None:
+    def __init__(self, owner: "RarsArmAdapter", index: int) -> None:
         self._owner = owner
         self._index = index
 
@@ -74,9 +58,9 @@ class _RarsMotor:
 
 
 class _RarsGroup:
-    """RARS motor group with the interface expected by reBotArm_control_py."""
+    """RARS motor group with the interface expected by the RARS01 pose controller."""
 
-    def __init__(self, owner: "RarsRebotArm", name: str, indices: list[int]) -> None:
+    def __init__(self, owner: "RarsArmAdapter", name: str, indices: list[int]) -> None:
         self._owner = owner
         self.name = name
         self._indices = indices
@@ -146,8 +130,8 @@ class _RarsGroup:
         return state[self._indices]
 
 
-class RarsRebotArm:
-    """Transport adapter: reBot IK/control unchanged, RARS SDK underneath."""
+class RarsArmAdapter:
+    """Transport adapter: RARS01 transport and feedback adapter."""
 
     backend = "rars01"
 
@@ -223,7 +207,11 @@ class RarsRebotArm:
             upper[index] = float(motor.joint_position_max)
 
         self._sdk_arm = sdk.RarsArm(sdk_cfg)
-        urdf_path = Path(hardware.get("urdf_path", "../rars01_description/urdf/rars01.urdf"))
+        urdf_path = Path(
+            hardware.get(
+                "urdf_path", "../rars01_description/urdf/rars01_control.urdf"
+            )
+        )
         if not urdf_path.is_absolute():
             urdf_path = (Path(project_root) / urdf_path).resolve()
         if not urdf_path.is_file():
@@ -288,7 +276,7 @@ class RarsRebotArm:
         self._disable()
 
     def constrain_model(self, model: Any) -> None:
-        """Intersect the unchanged reBot URDF limits with RARS hardware limits."""
+        """Intersect the RARS01 URDF limits with RARS hardware limits."""
         n = min(6, int(model.nq))
         model.lowerPositionLimit[:n] = np.maximum(
             model.lowerPositionLimit[:n], self._joint_lower[:n]
@@ -297,10 +285,10 @@ class RarsRebotArm:
             model.upperPositionLimit[:n], self._joint_upper[:n]
         )
         if np.any(model.lowerPositionLimit[:n] >= model.upperPositionLimit[:n]):
-            raise ValueError("reBot URDF and RARS01 hardware joint limits do not overlap")
+            raise ValueError("RARS01 URDF and RARS01 hardware joint limits do not overlap")
 
     def load_kinematic_model(self) -> Any:
-        """Load the unchanged RARS URDF while retaining the reBot algorithms."""
+        """Load the unchanged RARS URDF while retaining the baseline algorithms."""
         import pinocchio as pin
 
         model = pin.buildModelFromUrdf(str(self._urdf_path))
@@ -309,7 +297,7 @@ class RarsRebotArm:
             raise ValueError(
                 f"RARS01 end-effector frame not found: {self._end_effector_frame}"
             )
-        # reBot helper functions request the configured name `end_link`.
+        # TCP helper functions request the configured name `end_link`.
         # Add a Pinocchio-only alias; the URDF file itself remains unchanged.
         if model.getFrameId("end_link") >= model.nframes:
             source = model.frames[frame_id]
@@ -543,7 +531,7 @@ class RarsRebotArm:
                     return
                 time.sleep(max(0.0, dt - (time.perf_counter() - started)))
 
-        self._ctrl_thread = threading.Thread(target=loop, name="rars-rebot-control", daemon=True)
+        self._ctrl_thread = threading.Thread(target=loop, name="rars-control", daemon=True)
         self._ctrl_thread.start()
 
     def check_health(self) -> None:
@@ -574,92 +562,6 @@ class RarsRebotArm:
                 self._connected = False
 
 
-@dataclass(frozen=True)
-class SelectedArmConfig:
-    arm_type: str
-    controller_mode: str
-
-
-def _is_rebot_repo_root(path: Path) -> bool:
-    pkg = path / _REBOT_REPO_NAME
-    return (
-        path.is_dir()
-        and (pkg / "actuator" / "rebotarm.py").is_file()
-        and (path / "config" / "rebotarm.yaml").is_file()
-    )
-
-
-def find_rebot_repo_root(hint: Optional[str] = None) -> Path:
-    if hint:
-        requested = Path(hint).expanduser()
-        candidates = [
-            requested if requested.is_absolute() else _CAMERAWS_ROOT / requested
-        ]
-    else:
-        # Preferred portable layout, followed by the current development
-        # workspace layouts. This keeps config/default.yaml machine-independent.
-        candidates = [
-            _DEFAULT_REBOT_REPO,
-            _CAMERAWS_ROOT.parent / "reBotArm_control_py",
-            _CAMERAWS_ROOT.parent / "reBot-DevArm-Grasp" / "sdk" / _REBOT_REPO_NAME,
-        ]
-
-    checked: list[Path] = []
-    for candidate in candidates:
-        repo = candidate.resolve()
-        checked.append(repo)
-        if _is_rebot_repo_root(repo):
-            return repo
-    locations = "\n  - ".join(str(path) for path in checked)
-    raise FileNotFoundError(
-        "reBotArm_control_py repo was not found. Checked:\n  - " + locations
-    )
-
-
-def ensure_rebot_sdk_in_syspath(hint: Optional[str] = None) -> Path:
-    repo = find_rebot_repo_root(hint)
-    repo_str = str(repo)
-    if repo_str not in sys.path:
-        sys.path.insert(0, repo_str)
-    return repo
-
-
-def _read_yaml(path: Path) -> dict:
-    with path.open("r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-    if not isinstance(data, dict):
-        raise ValueError(f"{path} must be a YAML mapping")
-    return data
-
-
-def selected_hardware_yaml(repo_root: Optional[str] = None) -> Path:
-    repo = find_rebot_repo_root(repo_root)
-    config_dir = repo / "config"
-    global_cfg = _read_yaml(config_dir / "rebotarm.yaml")
-    hw_yaml = global_cfg.get("hardware_yaml")
-    if not hw_yaml:
-        raise ValueError(f"{config_dir / 'rebotarm.yaml'} missing hardware_yaml")
-
-    hw_path = Path(str(hw_yaml))
-    if not hw_path.is_absolute():
-        hw_path = config_dir / hw_path
-    hw_path = hw_path.resolve()
-    if not hw_path.is_file():
-        raise FileNotFoundError(f"Hardware config not found: {hw_path}")
-    return hw_path
-
-
-def selected_arm_config(repo_root: Optional[str] = None) -> SelectedArmConfig:
-    """Return the selected arm type and matching SDK controller mode."""
-    hw_path = selected_hardware_yaml(repo_root)
-    stem = hw_path.stem.lower()
-    if stem.endswith("_dm") or stem == "dm":
-        return SelectedArmConfig(arm_type="dm", controller_mode="posvel")
-    if stem.endswith("_rs") or stem == "rs":
-        return SelectedArmConfig(arm_type="rs", controller_mode="mit")
-    raise ValueError(f"Cannot infer arm type from hardware config: {hw_path}")
-
-
 class GraspDriver:
     MAX_DISTANCE_M = GRIPPER_MAX_DISTANCE_M
     _STATE_IDLE = "idle"
@@ -672,7 +574,6 @@ class GraspDriver:
         arm: Any,
         controller: Any,
         gripper_config: Optional[dict] = None,
-        repo_root: Optional[str] = None,
     ) -> None:
         self._arm = arm
         self._controller = controller
@@ -688,23 +589,21 @@ class GraspDriver:
         self._gripper_name = gripper_jcfgs[0].name
         self._gripper_motor: Any = None
 
-        from reBotArm_control_py.kinematics import compute_fk, load_robot_model, pad_q_for_model
+        from rars01_graspnet.pinocchio_math import compute_fk, pad_q_for_model
 
         self._compute_fk = compute_fk
         self._pad_q_for_model = pad_q_for_model
-        load_arm_model = getattr(arm, "load_kinematic_model", None)
-        self._model = load_arm_model() if load_arm_model is not None else load_robot_model()
+        self._model = arm.load_kinematic_model()
         self._n = self._arm_group.num_joints
         configure_controller = getattr(arm, "configure_controller_kinematics", None)
         if configure_controller is not None:
             configure_controller(self._controller)
         self._end_frame_name = self._model.frames[self._controller._end_frame_id].name
 
-        selected = selected_arm_config(repo_root)
-        backend = str(getattr(arm, "backend", selected.arm_type))
+        backend = str(getattr(arm, "backend", "rars01"))
+        if backend != "rars01":
+            raise ValueError("GraspDriver requires RARS01")
         defaults = {
-            "dm": {"angle_open": 5.0, "counterclockwise": True, "tau_max": 1.5, "close_torque": 1.0, "default_force": 0.30},
-            "rs": {"angle_open": 5.0, "counterclockwise": False, "tau_max": 1.5, "close_torque": 1.0, "default_force": 0.30},
             "rars01": {"angle_open": 1.0, "counterclockwise": False, "tau_max": 1.5, "close_torque": 1.0, "default_force": 0.30},
         }[backend]
         gcfg = {**defaults, **((gripper_config or {}).get(backend) or {})}
@@ -820,7 +719,7 @@ class GraspDriver:
 
         The target is solved as a Cartesian pose, but the executed path is a
         bounded joint-space minimum-jerk trajectory.  This avoids accepting
-        unconverged intermediate CLIK points from the generic reBot planner.
+        unconverged intermediate CLIK points from the Cartesian tracker.
         Returns the actual trajectory duration, or ``None`` when no safe IK
         target exists.  Only the RARS01 calibration script uses this method.
         """
@@ -832,7 +731,7 @@ class GraspDriver:
         if minimum_duration_s <= 0.0:
             raise ValueError("minimum_duration_s must be positive")
 
-        from reBotArm_control_py.kinematics.inverse_kinematics import (
+        from rars01_graspnet.pinocchio_math import (
             pos_rot_to_se3,
             solve_ik,
         )

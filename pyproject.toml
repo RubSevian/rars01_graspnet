@@ -7,7 +7,7 @@ description = "Eye-in-hand RGB-D grasping pipeline for RARS01"
 # separately on Jetson because their wheels are platform and CUDA specific.
 requires-python = ">=3.10,<3.13"
 dependencies = [
-  # Pinocchio 3.9 (reBot) requires the NumPy 2.3 ABI.
+  # Pinocchio 3.9 requires the NumPy 2.3 ABI.
   "numpy>=2.3,<2.4",
   "PyYAML>=6",
   "opencv-contrib-python>=4.8,<5",

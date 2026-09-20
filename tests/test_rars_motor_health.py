@@ -4,7 +4,7 @@ import threading
 import numpy as np
 import pytest
 
-from drivers.robot.grasp_driver import RarsRebotArm
+from drivers.robot.grasp_driver import RarsArmAdapter
 
 
 class _SdkArm:
@@ -25,7 +25,7 @@ class _SdkArm:
 
 
 def _adapter(statuses):
-    arm = RarsRebotArm.__new__(RarsRebotArm)
+    arm = RarsArmAdapter.__new__(RarsArmAdapter)
     arm._sdk_arm = _SdkArm(statuses)
     arm._lock = threading.RLock()
     arm._joint_lower = np.full(7, -2.0)
