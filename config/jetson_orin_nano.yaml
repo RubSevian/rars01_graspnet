@@ -3,9 +3,234 @@
 extends: default.yaml
 
 yolo:
-  model_name: yoloe-26s-seg.pt
-  device: cuda:0
+  text_encoder_subprocess: true # Подготовить названия классов в отдельном CPU-процессе и освободить его память до прогрева YOLO.
+  text_encoder_timeout_s: 120.0 # Максимальное ожидание подготовки классов; при ошибке старт не допускается.
+  model_name: yoloe-26s-seg.pt # Модель сегментации YOLO малого Jetson-профиля.
+  device: cuda:0 # Выполнять YOLO на GPU Jetson.
 
 graspnet:
-  num_point: 10000
-  top_k: 20
+  num_point: 10000 # Число точек RGB-D для одного GraspNet infer.
+  top_k: 20 # Лимит вывода исходных Grasp/demo; mission candidate limit наследуется из default.yaml.
+
+# NAV → поиск cup → GraspNet → RETREAT → HOME6. Настройки миссии находятся здесь, без отдельного YAML.
+go2_mission:
+  # full — полная миссия; ready_observe — NAV/ready/YOLO/GraspNet без исполнения хвата.
+  test_mode: ready_observe
+  # Mission choices only. Robot gains, kinematics and safety TTLs stay authoritative.
+  # Версия формата конфигурации автономной миссии.
+  version: 1
+  # Разрешение физической миссии; false оставляет запуск в inspection/read-only.
+  physical_enabled: true
+  # Класс YOLO, который ищем для захвата.
+  object_class: cup
+  compute:
+    # Число вычислительных потоков perception/BLAS/OpenCV; наследуется GraspNet worker.
+    cpu_threads: 1 # perception/BLAS/OpenCV; inherited by spawned GraspNet worker
+  startup:
+    camera_probe_frames: 3 # Разные свежие RGB/depth кадры до разрешения запуска NAV/контроллеров.
+    camera_probe_timeout_s: 15.0 # Ожидание корректных кадров при старте и повторном открытии.
+    camera_stop_timeout_s: 2.0 # Ожидание завершения чтения перед закрытием потока камеры.
+    model_timeout_s: 120.0 # Ограничение загрузки/прогрева GraspNet worker.
+    shutdown_timeout_s: 5.0 # Ожидание завершения фоновой обработки/освобождения моделей при выходе.
+    # Камера после проверки останавливает поток до первого scan_pose/detect; модели остаются в памяти.
+  paths:
+    geometry_cache: cache/mission_geometry # Постоянный кеш вне runtime/логов; при отсутствии пересоздаётся из mesh.
+    # Каталог исходного Grasp проекта относительно workspace.
+    grasp_root: repos/rars01_graspnet
+    # Этот Jetson Grasp YAML с наследованием default.yaml.
+    grasp_config: repos/rars01_graspnet/config/jetson_orin_nano.yaml
+    # Исходный SDK/robot YAML; authoritative gains/limits/ready pose не копируются.
+    sdk_config: repos/rars01_graspnet/config/default.yaml
+    # Действующий профиль RL/arm commissioning.
+    deployment: repos/workhop_rl/src/unitree_ros2_to_real/config/profiles/go2_rars01_commissioning.yaml
+    # NAV-профиль в paths; frame NAV vehicle в frames.
+    navigation: repos/autonomy_nav_go2/src/utilities/go2_navigation_bridge/config/real_navigation.yaml
+    # URDF визуальных/фиксированных TF руки.
+    arm_description: repos/rars01_description/urdf/rars01.urdf
+    # URDF управления рукой и исходного IK.
+    arm_urdf: repos/rars01_description/urdf/rars01_control.urdf
+    # Общая геометрическая модель Go2+рука.
+    full_urdf: repos/rars01_description/urdf/go2_arm_dynamic_base.urdf
+    # Каталог mesh/URDF ассетов.
+    description_root: repos/rars01_description
+    # Существующая eye-in-hand калибровка камеры.
+    hand_eye: repos/rars01_graspnet/config/calibration/orbbec_gemini2/hand_eye.npz
+    # Локальный checkout GraspNet baseline с CUDA extensions.
+    graspnet_root: /home/ruben/RARS_sdk_grasp_net/rars01_graspnet/sdk/graspnet-baseline
+    # Python venv с GraspNet/YOLO/геометрическими зависимостями.
+    python: /home/ruben/RARS_sdk_grasp_net/rars01_graspnet/.venv/bin/python
+  owner:
+    # Единственный serial-порт руки.
+    device_path: /dev/serial/by-id/usb-STMicroelectronics_STM32_Virtual_ComPort_3172366B3233-if00
+    # Общие lease-файлы единственного владельца serial.
+    lock_directory: runtime/rars_serial_leases
+    # Журнал enable/сбоев owner; не требует отдельной qualification.
+    journal_path: runtime/rars_auto_home/enable-journal
+  grasp_verification:
+    # Режим соответствующего раздела: stub — без доказательства хвата, stop_and_observe — поиск с остановками.
+    mode: stub # Completion of a closing command does not verify an object.
+    # Максимальная длительность команды закрытия губок, с; достижение упора завершает её раньше.
+    close_duration_s: 2.0 # bounded torque-close phase, then preserve gripper command
+  gripper_observation:
+    # Включить только информационное наблюдение/запись; не является условием движения.
+    enabled: true # informational only; never a motion/HOME gate
+    # Пробный минимум |измеренного момента| мотора7, Нм; не калиброван, не задаёт силу.
+    min_abs_torque_nm: 1.0 # provisional, NOT calibrated; not the 2.5 Nm command
+    # Максимальная |скорость губок| для признака удержания, рад/с.
+    max_abs_velocity_rad_s: 0.05
+    # Непрерывная выдержка признаков перед PRESUMED_HELD, с.
+    stable_s: 0.2
+    # Верхняя частота записи полученных feedback samples, Гц.
+    record_hz: 50.0 # received owner samples; actual rate may be lower
+    # Размер очереди фоновой записи; переполнение лишь увеличивает счётчик пропусков.
+    queue_capacity: 2048
+    # Период сброса буфера записи на диск, с.
+    flush_s: 1.0
+    # Каталог JSONL относительно workspace; файл автоматически создаётся на mission session.
+    directory: runtime/gripper_observation
+  frames:
+    # NAV-профиль в paths; frame NAV vehicle в frames.
+    navigation: vehicle
+    # Корневой frame манипулятора.
+    arm_base: base_link
+    # TCP frame рабочего органа.
+    tcp: End_link
+    # Optical frame камеры.
+    optical: orbbec_color_optical_frame
+    # Operator-approved analytical cloud-consistent transform, not a measurement.
+    # Derived from current NAV/Point-LIO/relay and pinned radar/mount URDF.
+    vehicle_to_mount:
+      # XYZ преобразования, м; существующее аналитическое значение сохранено.
+      xyz_m: [-0.011751729020484103, 0.014655, 0.051330825795646975]
+      # RPY преобразования, рад; существующее значение сохранено.
+      rpy_rad: [0.0, 0.000002585055555393012, 0.0]
+    # Historical analytical candidate; runtime reads vehicle_to_mount only.
+    vehicle_to_mount_candidate:
+      # XYZ преобразования, м; существующее аналитическое значение сохранено.
+      xyz_m: [-0.011751729020484103, 0.014655, 0.051330825795646975]
+      # RPY преобразования, рад; существующее значение сохранено.
+      rpy_rad: [0.0, 0.000002585055555393012, 0.0]
+    # Допустимый временной разброс coherent снимка базы/руки/ног, с.
+    max_state_skew_s: 0.05
+    odometry_buffer_size: 512 # Лимит DDS-очереди и буфера odometry, ожидающих TF.
+    odometry_history_s: 1.0 # Срок хранения; допуск свежести сцены берётся из NAV YAML.
+    tf_lookup_attempts_per_tick: 8 # Ограничение проверок подходящих пар за один tick.
+    # Gross discontinuity guards, not permission to move during manipulation.
+    # Порог крупного скачка положения сцены, м.
+    continuity_translation_m: 0.10
+    # Порог крупного скачка ориентации сцены, рад.
+    continuity_rotation_rad: 0.20
+  search:
+    # Режим соответствующего раздела: stub — без доказательства хвата, stop_and_observe — поиск с остановками.
+    mode: stop_and_observe # continuous is reserved; rejected until implemented
+    # Первое наблюдение и возврат перед HOME при отсутствии объекта, рад.
+    joint1_start_rad: 0.0 # first observation; return here before HOME if not found
+    # Начало основного прохода первого сустава, рад.
+    joint1_min_rad: -2.5
+    # Конец основного прохода первого сустава, рад.
+    joint1_max_rad: 2.5
+    # Расстояние между остановками основного прохода, рад; это не скорость.
+    joint1_step_rad: 0.5 # observation spacing, NOT angular speed
+    # Ограничение скорости суставов на поисковых переходах, рад/с.
+    speed_rad_s: 0.10
+    # Пауза после подтверждённого достижения позы перед съёмкой, с.
+    settle_s: 1.0
+    # Число свежих последовательных YOLO-кадров для принятия найденной цели.
+    observations: 3
+    # Минимальная уверенность YOLO для класса object_class.
+    confidence: 0.5
+    # Допустимое смещение центра цели между кадрами одной попытки, пиксели.
+    max_center_shift_px: 35
+    # Срок ограниченного поиска, включая переходы, расчёт геометрии и наблюдения, с.
+    timeout_s: 360 # whole search: motion, geometry computation, settle and frames
+    # Число наблюдений: начальный0 плюс11точек прохода; согласуется с min/max/step.
+    max_attempts: 12 # initial zero + 11 sweep stops, including zero again
+    # Use authoritative ready_pose Cartesian target, subject to full path checking.
+  refinement:
+    # Максимальная корректировка камеры или изменение базы за settle window, м — по разделу.
+    max_translation_m: 0.02
+    # Доля поперечного смещения цели, используемая для малой корректировки камеры.
+    gain: 0.2
+    # Число свежих YOLO/RGB-D кадров перед вызовом GraspNet.
+    fresh_frames: 4
+  settle:
+    # Минимальная непрерывная стабилизация базы после свежего RL_ZERO, с.
+    min_stable_s: 5.0
+    # Максимальная корректировка камеры или изменение базы за settle window, м — по разделу.
+    max_translation_m: 0.02
+    # Допустимое изменение ориентации базы за окно стабилизации, рад.
+    max_rotation_rad: 0.08726646259971647
+    # Предел абсолютного наклона базы для работы руки, рад.
+    max_tilt_rad: 0.20
+    # Предельное ожидание стабильного окна базы, с.
+    timeout_s: 15
+  execution:
+    # Максимальный возраст RGB-D кадра при получении для обработки, с.
+    # Отдельно от свежести живого feedback руки; поза берётся из истории на момент кадра.
+    camera_max_age_s: 0.60
+    # Ограничение скорости суставов на grasp/refine/retreat/HOME, рад/с.
+    arm_speed_rad_s: 0.10
+    # Срок актуальности статусов и новых команд mission, с.
+    heartbeat_ttl_s: 0.25
+    # Период Python FSM/health таймера, с.
+    tick_s: 0.02
+    diagnostic_log_interval_s: 1.0 # Минимальный интервал записи изменений причины готовности; health публикуется каждый tick.
+    # Общий срок arm-этапа, включая планирование и исполнение, с.
+    state_timeout_s: 180 # includes geometry computation and physical segment time
+    # Общий срок активной миссии после принятия NAV-цели, с.
+    mission_timeout_s: 900
+    # Срок достижения цели навигацией, с.
+    navigation_timeout_s: 120
+    # Предельная длительность одного segment; также задаёт ограниченный размер parser, с.
+    max_plan_duration_s: 180
+    # Допуск measured q к началу траектории owner, рад.
+    start_tolerance_rad: 0.02
+    # Допуск конечного достижения суставов owner, рад; не мгновенный tracking guard.
+    joint_reached_tolerance_rad: 0.02
+  collision:
+    # Current operator-approved scope: arm self-collision and arm against Go2.
+    # External floor/boxes/depth and carried-object geometry are currently disabled.
+    # Проверять внешние препятствия; сейчас отключено по указанию оператора.
+    environment_enabled: false
+    # Проверять геометрию удерживаемого предмета; сейчас отключено.
+    payload_enabled: false
+    # Отсев заведомо раздельной геометрии перед точной проверкой.
+    broadphase_enabled: true
+    # Численный запас широкого геометрического отсева, м.
+    broadphase_padding_m: 0.000000001 # conservative extra AABB separation guard
+    # Вычислительный бюджет одного collision pass, с; не RL watchdog.
+    check_timeout_s: 90.0 # geometry pass for wide initial sweep; request deadline still applies; not the RL watchdog
+    # Минимальный clearance для проверяемых пар, м; 1e-6м=0.001мм.
+    margin_m: 0.000001 # 0.001 mm; clearance only, reported intersections still block
+    # Operator-requested joint1 exception: mutual self-collision only, all poses.
+    ignored_self_collision_pairs:
+      - [base_link, link1_m0]
+    # Operator accepts zero-distance STL contacts for these exact pairs.
+    # Negative distances still block; triangle distance is not penetration depth.
+    allowed_zero_contact_pairs:
+      - [link1_m0, link2_m1]
+      - [link2_m1, link2_m2]
+      - [link2_m2, link_3_m3]
+      - [link_3_m3, link_4_m4]
+      - [link_4_m4, link_5_m5]
+      - [End_link, gripper_left]
+      - [End_link, gripper_right]
+      - [gripper_left, gripper_right]
+    # Full robot geometry stays checked. These external-scene fields
+    # become mandatory again when environment_enabled is true.
+    # Максимальный шаг промежуточного collision sampling, рад.
+    sample_max_joint_step_rad: 0.005
+    # Legacy поле диагностики; не разрешает движение.
+    floor_z_in_body_m: null # legacy diagnostic only; never grants execution clearance
+    # Высота пола в map; требуется только при включённом окружении.
+    floor_z_in_map_m: null
+    # Frame внешних препятствий.
+    environment_frame: map
+    # Ревизия внешней сцены; обязательна только при environment_enabled.
+    scene_revision: ''
+    # Внешние box-препятствия; сейчас не используются.
+    environment_boxes: []
+    # Габариты предмета; нужны только при payload_enabled.
+    payload_box_m: null
+    # Смещение модели предмета относительно TCP; сейчас не требуется.
+    payload_tcp_xyz_m: null

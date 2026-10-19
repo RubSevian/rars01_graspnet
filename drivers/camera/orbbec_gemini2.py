@@ -164,6 +164,7 @@ class OrbbecGemini2(CameraDriver):
     # Frames
 
     def get_frame(self) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+        self.last_frame_timing = None
         if self._pipeline is None:
             return None, None
         try:
@@ -224,6 +225,18 @@ class OrbbecGemini2(CameraDriver):
                 return None, None
             else:
                 self._reset_frame_failures()
+                # Preserve SDK acquisition timestamps; never substitute callback
+                # completion time for an old RGB-D sample. Physical clock
+                # qualification remains an explicit mission admission gate.
+                try:
+                    self.last_frame_timing = {
+                        "color_system_ns": int(cf.get_system_timestamp_us()) * 1000,
+                        "depth_system_ns": int(df.get_system_timestamp_us()) * 1000,
+                        "color_device_us": int(cf.get_timestamp_us()),
+                        "depth_device_us": int(df.get_timestamp_us()),
+                    }
+                except (AttributeError, TypeError, ValueError):
+                    self.last_frame_timing = None
             return color_bgr, depth_mm
         except CameraFrameError:
             raise

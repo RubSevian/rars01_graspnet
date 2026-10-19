@@ -76,7 +76,32 @@ def load_yolo(
     print(f"Loading YOLO target detector: {model_path}")
     model = YOLO(str(model_path))
     if use_world and ("world" in model_name.lower() or "yoloe" in model_name.lower()) and custom_classes:
-        model.set_classes(custom_classes)
+        if "yoloe" in model_name.lower() and yolo_cfg.get("text_encoder_subprocess", False):
+            # Text encoding is startup-only. Exiting its process also releases
+            # TorchScript/text-library memory that survives Python gc.collect().
+            import json
+            import subprocess
+            import sys
+            import tempfile
+            import torch
+
+            timeout = float(yolo_cfg.get("text_encoder_timeout_s", 120.0))
+            if not np.isfinite(timeout) or timeout <= 0:
+                raise ValueError("text_encoder_timeout_s must be finite and positive")
+            with tempfile.TemporaryDirectory(prefix="yolo_text_") as directory:
+                output = Path(directory) / "embeddings.npy"
+                subprocess.run(
+                    [sys.executable, str(Path(__file__).with_name("yolo_text_embeddings.py")),
+                     str(model_path.resolve()), str(output)],
+                    input=json.dumps(custom_classes), text=True, check=True, timeout=timeout,
+                )
+                embeddings = np.load(output, allow_pickle=False)
+            if (embeddings.ndim != 3 or embeddings.shape[:2] != (1, len(custom_classes))
+                    or not np.isfinite(embeddings).all()):
+                raise ValueError("Invalid YOLO text embeddings")
+            model.set_classes(custom_classes, torch.from_numpy(embeddings))
+        else:
+            model.set_classes(custom_classes)
         print(f"YOLO open-vocabulary classes: {custom_classes}")
 
     yolo_opts.update(

@@ -10,6 +10,7 @@ from __future__ import annotations
 import multiprocessing as mp
 from pathlib import Path
 import time
+import threading
 from typing import Any, Optional
 
 import numpy as np
@@ -25,6 +26,28 @@ def _worker_main(connection: Any, checkpoint: str, num_view: int) -> None:
             request = connection.recv()
             if request.get("type") == "stop":
                 return
+            if request.get("type") == "warmup":
+                torch = graspnet_utils.torch
+                # Exercise actual CUDA pointnet2 + decode without requiring an
+                # object/depth in the startup HOME camera view.
+                rng = np.random.default_rng(0)
+                points = rng.uniform([-.1, -.1, .2], [.1, .1, .4],
+                                     (1, request['num_point'], 3)).astype(np.float32)
+                with torch.no_grad():
+                    outputs = net({'point_clouds': torch.from_numpy(points).cuda(),
+                                   'cloud_colors': np.zeros((request['num_point'], 3))})
+                    decoded = graspnet_utils.pred_decode(outputs)
+                    if len(decoded)!=1 or not all(bool(torch.isfinite(x).all()) for x in decoded):
+                        raise RuntimeError('GraspNet warmup nonfinite output')
+                    torch.cuda.synchronize()
+                del outputs, decoded, points
+                # Startup is followed by idle NAV: return scratch allocations
+                # to the shared Jetson memory pool, keep model weights resident.
+                torch.cuda.empty_cache()
+                connection.send({'type': 'warmup_ready',
+                                 'cuda_allocated_bytes': torch.cuda.memory_allocated(),
+                                 'cuda_reserved_bytes': torch.cuda.memory_reserved()})
+                continue
             if request.get("type") != "infer":
                 continue
 
@@ -61,6 +84,9 @@ def _worker_main(connection: Any, checkpoint: str, num_view: int) -> None:
                 "counts": counts,
                 "elapsed_s": time.monotonic() - started,
             })
+            # recv() may block throughout NAV. Do not retain the last RGB-D
+            # request or CUDA feature tensors while waiting for the next job.
+            del request, end_points, raw_cloud, grasps, pre_bbox, bbox_grasps, counts, _
     except BaseException as exc:
         try:
             connection.send({"type": "error", "error": f"{type(exc).__name__}: {exc}"})
@@ -74,6 +100,8 @@ class GraspNetWorker:
     """Persistent spawned process that owns the GraspNet model and CUDA work."""
 
     def __init__(self, checkpoint: Path, num_view: int, startup_timeout_s: float = 120.0):
+        self._close_lock = threading.Lock()
+        self._closed = False
         context = mp.get_context("spawn")
         parent, child = context.Pipe()
         self._connection = parent
@@ -85,7 +113,11 @@ class GraspNetWorker:
         )
         self._process.start()
         child.close()
-        message = self._receive(startup_timeout_s, "GraspNet worker startup")
+        try:
+            message = self._receive(startup_timeout_s, "GraspNet worker startup")
+        except BaseException:
+            self.close(force=True)
+            raise
         if message.get("type") != "ready":
             self.close(force=True)
             raise RuntimeError(message.get("error", "GraspNet worker failed to start"))
@@ -133,6 +165,17 @@ class GraspNetWorker:
             raise RuntimeError(f"Unexpected GraspNet worker response: {message.get('type')}")
         return message
 
+    def is_alive(self) -> bool:
+        return not self._closed and self._process.is_alive()
+
+    def warmup(self, num_point: int, timeout_s: float) -> None:
+        if not self.is_alive():raise RuntimeError('GraspNet worker is not running')
+        self._connection.send({'type': 'warmup', 'num_point': int(num_point)})
+        message = self._receive(timeout_s, 'GraspNet warmup')
+        if message.get('type') != 'warmup_ready':
+            raise RuntimeError(message.get('error', 'GraspNet warmup failed'))
+        self.last_warmup_memory={key:message[key] for key in ('cuda_allocated_bytes','cuda_reserved_bytes')}
+
     def _receive(self, timeout_s: float, operation: str) -> dict[str, Any]:
         deadline = time.monotonic() + float(timeout_s)
         while time.monotonic() < deadline:
@@ -143,6 +186,12 @@ class GraspNetWorker:
         raise TimeoutError(f"{operation} exceeded {timeout_s:.1f}s")
 
     def close(self, force: bool = False) -> None:
+        with self._close_lock:
+            if self._closed:return
+            self._closed=True
+            self._close(force)
+
+    def _close(self, force: bool) -> None:
         if getattr(self, "_process", None) is None:
             return
         if self._process.is_alive() and not force:
@@ -154,4 +203,8 @@ class GraspNetWorker:
         if self._process.is_alive():
             self._process.terminate()
             self._process.join(timeout=2.0)
+        if self._process.is_alive():
+            self._process.kill() # Own inference-only subprocess; no robot owner.
+            self._process.join(timeout=2.0)
         self._connection.close()
+        if self._process.is_alive():raise RuntimeError('GraspNet worker did not exit')
