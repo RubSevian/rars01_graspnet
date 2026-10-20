@@ -22,7 +22,8 @@ def make_camera(cfg: dict) -> CameraDriver:
     calib_dir = str(_root / "config" / "calibration" / cam_type)
 
     if "orbbec" in cam_type:
-        return OrbbecGemini2(w, h, fps, calib_dir=calib_dir, alignment=alignment)
+        return OrbbecGemini2(w, h, fps, calib_dir=calib_dir, alignment=alignment,
+            sdk_queue_size=cam_cfg.get("sdk_queue_size"),sdk_config_path=cam_cfg.get("sdk_config_path"))
     elif "realsense" in cam_type:
         return RealsenseCamera(w, h, fps, calib_dir=calib_dir)
     else:

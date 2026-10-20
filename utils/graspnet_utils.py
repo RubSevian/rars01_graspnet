@@ -190,6 +190,7 @@ def build_end_points(
     num_point: int,
     min_depth_m: float,
     max_depth_m: float,
+    *, visualize: bool = True,
 ) -> tuple[dict, Any | None, np.ndarray]:
     if color_bgr.shape[:2] != depth_mm.shape[:2]:
         depth_mm = cv2.resize(depth_mm, (color_bgr.shape[1], color_bgr.shape[0]), interpolation=cv2.INTER_NEAREST)
@@ -225,7 +226,7 @@ def build_end_points(
     }
 
     o3d_cloud = None
-    if o3d is not None:
+    if visualize and o3d is not None:
         o3d_cloud = o3d.geometry.PointCloud()
         o3d_cloud.points = o3d.utility.Vector3dVector(cloud_masked.astype(np.float32))
         o3d_cloud.colors = o3d.utility.Vector3dVector(color_masked.astype(np.float32))

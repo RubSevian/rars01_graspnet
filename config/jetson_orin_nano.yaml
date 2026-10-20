@@ -2,6 +2,11 @@
 # All robot geometry, calibration and safety parameters come from default.yaml.
 extends: default.yaml
 
+camera:
+  processing_mode: latest_raw # Mission: SDK RGB-D принимается постоянно; alignment/decode только по запросу. continuous — прежняя обработка каждого кадра.
+  sdk_queue_size: null # Без изменения SDK;1/2/10 только для отдельно разрешённого camera A/B.
+  sdk_config_path: null # null: XML из установленного pyorbbecsdk; создаётся временная копия.
+
 yolo:
   text_encoder_subprocess: true # Подготовить названия классов в отдельном CPU-процессе и освободить его память до прогрева YOLO.
   text_encoder_timeout_s: 120.0 # Максимальное ожидание подготовки классов; при ошибке старт не допускается.
@@ -25,7 +30,9 @@ go2_mission:
   object_class: cup
   compute:
     # Число вычислительных потоков perception/BLAS/OpenCV; наследуется GraspNet worker.
+    inference_nice: 5 # Linux nice только вычислительного потока/его GraspNet child; ROS callbacks и FIFO20 не меняются. 0 — прежний приоритет.
     cpu_threads: 1 # perception/BLAS/OpenCV; inherited by spawned GraspNet worker
+    grasp_full_diagnostics: false # true: пересылать pre_bbox/bbox массивы; mission использует только grasps.
   startup:
     camera_probe_frames: 3 # Разные свежие RGB/depth кадры до разрешения запуска NAV/контроллеров.
     camera_probe_timeout_s: 15.0 # Ожидание корректных кадров при старте и повторном открытии.
@@ -112,8 +119,14 @@ go2_mission:
       rpy_rad: [0.0, 0.000002585055555393012, 0.0]
     # Допустимый временной разброс coherent снимка базы/руки/ног, с.
     max_state_skew_s: 0.05
-    odometry_buffer_size: 512 # Лимит DDS-очереди и буфера odometry, ожидающих TF.
+    leg_state_transport: native_batch # C++ наблюдатель сохраняет реальные q и время callback; raw — прежний Python LowState callback.
+    leg_collector_period_ms: 20 # Период доставки пачки в Python; частота приёма LowState не ограничивается.
+    leg_collector_capacity: 512 # Максимум ожидающих измерений; переполнения видны в health, stamps не обновляются.
+    arm_history_depth: 32 # Очередь реальных feedback для сопоставления с odometry; не продлевает TTL измерений.
+    odometry_buffer_size: 512 # Внутренняя ограниченная история измерений для exact odometry/TF pairing.
+    scene_receive_depth: 32 # DDS-очередь odometry/TF, отдельно от истории; максимум сообщений за callback.
     odometry_history_s: 1.0 # Срок хранения; допуск свежести сцены берётся из NAV YAML.
+    tf_index_enabled: true # Индекс реально полученных TF; false возвращает поиск по истории.
     tf_lookup_attempts_per_tick: 8 # Ограничение проверок подходящих пар за один tick.
     # Gross discontinuity guards, not permission to move during manipulation.
     # Порог крупного скачка положения сцены, м.
@@ -165,9 +178,15 @@ go2_mission:
     # Предельное ожидание стабильного окна базы, с.
     timeout_s: 15
   execution:
+    # yaml — совместимость; typed — ArmFastState, включать после проверки нового owner.
+    arm_state_transport: yaml
     # Максимальный возраст RGB-D кадра при получении для обработки, с.
     # Отдельно от свежести живого feedback руки; поза берётся из истории на момент кадра.
     camera_max_age_s: 0.60
+    observation_retry_delay_s: 0.25 # Пауза перед новой попыткой наблюдения в той же позе; новый request id.
+    observation_recovery_timeout_s: 30 # Общий срок восстановления наблюдения, не TTL кадра/feedback; затем BLOCKED.
+    camera_admission_candidates: 1 # Штатно один кадр. Эксперимент 3 кандидата не подтвердил выигрыш под полной нагрузкой; TTL/skew не меняются.
+    camera_admission_attempts: 3 # До трёх НОВЫХ пачек при истечении TTL; TTL каждого остаётся 600 мс, общий deadline операции сохраняется.
     # Ограничение скорости суставов на grasp/refine/retreat/HOME, рад/с.
     arm_speed_rad_s: 0.10
     # Срок актуальности статусов и новых команд mission, с.

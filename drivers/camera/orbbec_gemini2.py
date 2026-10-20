@@ -26,6 +26,8 @@ class OrbbecGemini2(CameraDriver):
         fps: int = 30,
         calib_dir: Optional[str] = None,
         alignment: str = "auto",
+        sdk_queue_size: Optional[int] = None,
+        sdk_config_path: Optional[str] = None,
     ) -> None:
         self._w = width
         self._h = height
@@ -35,6 +37,10 @@ class OrbbecGemini2(CameraDriver):
         if self._alignment not in ("auto", "hardware", "software"):
             raise ValueError("Orbbec alignment must be auto, hardware, or software")
 
+        if sdk_queue_size is not None and (type(sdk_queue_size) is not int or sdk_queue_size not in (1,2,10)):
+            raise ValueError("SDK queue experiment requires1,2 or10")
+        self._sdk_queue_size=sdk_queue_size;self._sdk_config_path=sdk_config_path
+        self._sdk_context=None;self._sdk_device=None;self._queue_config=None
         self._pipeline = None
         self._align_filter = None
         self._pending_frames = None
@@ -60,6 +66,20 @@ class OrbbecGemini2(CameraDriver):
         except ImportError as e:
             raise RuntimeError(f"pyorbbecsdk is not installed: {e}") from e
 
+        # Opt-in only: preserve the installed SDK config except two queue sizes.
+        # Keep context/device/XML alive across pipeline software-D2C fallback.
+        if self._sdk_queue_size is not None:
+            import pyorbbecsdk
+            from .orbbec_queue import SDKQueueConfig
+            source=self._sdk_config_path or str(Path(pyorbbecsdk.__file__).with_name('OrbbecSDKConfig.xml'))
+            try:
+                self._queue_config=SDKQueueConfig(source,self._sdk_queue_size)
+                self._sdk_context=Context(str(self._queue_config.path))
+                self._sdk_device=self._sdk_context.query_devices().get_device_by_index(0)
+            except BaseException:
+                self.close()
+                raise
+
         # Silence noisy native logs during SDK initialization.
         devnull = os.open(os.devnull, os.O_WRONLY)
         saved = os.dup(2)
@@ -69,12 +89,12 @@ class OrbbecGemini2(CameraDriver):
         try:
             try:
                 from pyorbbecsdk import OBLogSeverity
-                Context().set_logger_severity(OBLogSeverity.FATAL)
+                (self._sdk_context or Context()).set_logger_severity(OBLogSeverity.FATAL)
             except Exception:
                 pass
 
             try:
-                self._pipeline = Pipeline()
+                self._pipeline = Pipeline(self._sdk_device) if self._sdk_device is not None else Pipeline()
             except Exception as e:
                 raise RuntimeError(
                     f"Orbbec camera not found: {e}\n"
@@ -109,7 +129,7 @@ class OrbbecGemini2(CameraDriver):
                         raise RuntimeError("Hardware D2C started but produced no RGB-D frames")
                     print("[OrbbecGemini2] Hardware D2C produced no frames; using software")
                     self._pipeline.stop()
-                    self._pipeline = Pipeline()
+                    self._pipeline = Pipeline(self._sdk_device) if self._sdk_device is not None else Pipeline()
                     use_software = True
 
             if use_software:
@@ -160,19 +180,51 @@ class OrbbecGemini2(CameraDriver):
         self._align_filter = None
         self._pending_frames = None
         self.active_alignment = None
+        self._sdk_device=None;self._sdk_context=None
+        if self._queue_config is not None:self._queue_config.close()
+        self._queue_config=None
 
     # Frames
 
+    def acquire_frames(self):
+        """Own one unprocessed SDK frameset; no alignment or image conversion."""
+        if self._pipeline is None:
+            return None
+        frames = self._pending_frames
+        self._pending_frames = None
+        return frames if frames is not None else self._pipeline.wait_for_frames(500)
+
+    @staticmethod
+    def frame_timing(frames):
+        if frames is None:
+            return None
+        try:
+            cf,df=frames.get_color_frame(),frames.get_depth_frame()
+            if cf is None or df is None:return None
+            return dict(color_system_ns=int(cf.get_system_timestamp_us())*1000,
+                depth_system_ns=int(df.get_system_timestamp_us())*1000,
+                color_device_us=int(cf.get_timestamp_us()),depth_device_us=int(df.get_timestamp_us()))
+        except (AttributeError,TypeError,ValueError):
+            return None
+
     def get_frame(self) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+        # Legacy synchronous interface, using exactly the same decoder as the
+        # request-driven mission pump. No shared SDK/global configuration.
+        try:
+            return self.decode_frames(self.acquire_frames())
+        except CameraFrameError:
+            raise
+        except Exception as exc:
+            self.last_frame_timing=None
+            self._record_frame_failure(str(exc))
+            return None,None
+
+    def decode_frames(self, frames) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         self.last_frame_timing = None
         if self._pipeline is None:
             return None, None
         try:
             from pyorbbecsdk import OBFormat
-            frames = self._pending_frames
-            self._pending_frames = None
-            if frames is None:
-                frames = self._pipeline.wait_for_frames(500)
             if frames is None:
                 self._record_frame_failure("wait_for_frames timeout")
                 return None, None

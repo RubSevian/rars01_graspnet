@@ -55,12 +55,14 @@ def _worker_main(connection: Any, checkpoint: str, num_view: int) -> None:
             end_points, _, raw_cloud = graspnet_utils.build_end_points(
                 request["color_bgr"], request["depth_mm"], request["K"],
                 request["num_point"], request["min_depth"], request["max_depth"],
+                visualize=False,
             )
             grasps, counts = graspnet_utils.infer_grasps(
                 net, end_points, raw_cloud, request["collision_thresh"],
                 request["voxel_size"],
             )
-            pre_bbox = grasps.grasp_group_array.copy()
+            diagnostics=request.get("include_diagnostics",True)
+            pre_bbox = grasps.grasp_group_array.copy() if diagnostics else None
             bbox = request.get("bbox_xyxy")
             if bbox is not None:
                 grasps = graspnet_utils.filter_grasps_by_bbox(
@@ -69,24 +71,24 @@ def _worker_main(connection: Any, checkpoint: str, num_view: int) -> None:
                     expand_ratio=request["target_expand_ratio"],
                     image_shape=request["color_bgr"].shape[:2],
                 )
-            bbox_grasps = grasps.grasp_group_array.copy()
+            bbox_grasps = grasps.grasp_group_array.copy() if diagnostics else None
             grasps = graspnet_utils.filter_grasps_by_width(
                 grasps, request.get("max_grasp_width_m")
             )
             grasps = graspnet_utils.filter_grasps_by_depth(
                 grasps, request.get("max_grasp_depth_m")
             )
-            connection.send({
+            response={
                 "type": "result",
                 "grasps": grasps.grasp_group_array,
-                "pre_bbox_grasps": pre_bbox,
-                "bbox_grasps": bbox_grasps,
                 "counts": counts,
                 "elapsed_s": time.monotonic() - started,
-            })
+            }
+            if diagnostics:response.update(pre_bbox_grasps=pre_bbox,bbox_grasps=bbox_grasps)
+            connection.send(response)
             # recv() may block throughout NAV. Do not retain the last RGB-D
             # request or CUDA feature tensors while waiting for the next job.
-            del request, end_points, raw_cloud, grasps, pre_bbox, bbox_grasps, counts, _
+            del request, end_points, raw_cloud, grasps, pre_bbox, bbox_grasps, counts, response, _
     except BaseException as exc:
         try:
             connection.send({"type": "error", "error": f"{type(exc).__name__}: {exc}"})
@@ -139,11 +141,13 @@ class GraspNetWorker:
         max_grasp_width_m: Optional[float],
         max_grasp_depth_m: Optional[float],
         timeout_s: float,
+        include_diagnostics: bool = True,
     ) -> dict[str, Any]:
         if not self._process.is_alive():
             raise RuntimeError("GraspNet worker is not running")
         self._connection.send({
             "type": "infer",
+            "include_diagnostics": bool(include_diagnostics),
             "color_bgr": np.ascontiguousarray(color_bgr),
             "depth_mm": np.ascontiguousarray(depth_mm),
             "K": np.asarray(K, dtype=np.float64),
