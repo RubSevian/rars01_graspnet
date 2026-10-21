@@ -78,6 +78,11 @@ go2_mission:
     mode: stub # Completion of a closing command does not verify an object.
     # Максимальная длительность команды закрытия губок, с; достижение упора завершает её раньше.
     close_duration_s: 2.0 # bounded torque-close phase, then preserve gripper command
+    max_attempts: 2
+    requested_motor_torque_limit_nm: 2.2
+    min_inner_width_m: 0.05 # Успех требует строго большего раскрытия.
+    motor_torque_cap_validated: false # SDK ограничивает tau, не доказывает полный MIT-момент.
+    motor_torque_cap_evidence: ''
   gripper_observation:
     # Включить только информационное наблюдение/запись; не является условием движения.
     enabled: true # informational only; never a motion/HOME gate
@@ -145,7 +150,7 @@ go2_mission:
     # Расстояние между остановками основного прохода, рад; это не скорость.
     joint1_step_rad: 0.5 # observation spacing, NOT angular speed
     # Ограничение скорости суставов на поисковых переходах, рад/с.
-    speed_rad_s: 0.10
+    speed_rad_s: 0.20
     # Пауза после подтверждённого достижения позы перед съёмкой, с.
     settle_s: 1.0
     # Число свежих последовательных YOLO-кадров для принятия найденной цели.
@@ -156,8 +161,8 @@ go2_mission:
     max_center_shift_px: 35
     # Срок ограниченного поиска, включая переходы, расчёт геометрии и наблюдения, с.
     timeout_s: 360 # whole search: motion, geometry computation, settle and frames
-    # Число наблюдений: начальный0 плюс11точек прохода; согласуется с min/max/step.
-    max_attempts: 12 # initial zero + 11 sweep stops, including zero again
+    # 0 → −2.5 → 0 → +2.5 с шагом 0.5 рад, включая повторные наблюдения.
+    max_attempts: 16
     # Use authoritative ready_pose Cartesian target, subject to full path checking.
   refinement:
     # Максимальная корректировка камеры или изменение базы за settle window, м — по разделу.
@@ -191,6 +196,8 @@ go2_mission:
     arm_speed_rad_s: 0.10
     # Срок актуальности статусов и новых команд mission, с.
     heartbeat_ttl_s: 0.25
+    nav_status_ttl_s: 0.60 # Только status процесса NAV; не odometry/TF или command lease.
+    perception_status_ttl_s: 0.50 # Только status процесса; не camera/scene TTL.
     # Период Python FSM/health таймера, с.
     tick_s: 0.02
     diagnostic_log_interval_s: 1.0 # Минимальный интервал записи изменений причины готовности; health публикуется каждый tick.
