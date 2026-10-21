@@ -77,13 +77,20 @@ go2_mission:
     # Режим соответствующего раздела: stub — без доказательства хвата, stop_and_observe — поиск с остановками.
     mode: torque_width # Preliminary measured torque/width confirmation; physical full mode remains gated.
     # Максимальная длительность команды закрытия губок, с; достижение упора завершает её раньше.
-    close_duration_s: 2.0 # bounded torque-close phase, then preserve gripper command
+    close_duration_s: 8.0 # Full range at 0.15 rad/s plus confirmation; bounded contact control.
     max_attempts: 2
-    requested_motor_torque_limit_nm: 2.2
-    max_total_torque_nm: 2.2 # Full MIT target; NOT a proven controller-side limit.
     min_inner_width_m: 0.05 # Legacy declaration; assessment accepts width >= 0.05 m.
-    motor_torque_cap_validated: false # SDK ограничивает tau, не доказывает полный MIT-момент.
+    motor_torque_cap_validated: false # Informational only: no guaranteed instantaneous torque cap is claimed.
     motor_torque_cap_evidence: ''
+  gripper_torque_control:
+    mode: measured_contact # Sampled SDK feedback regulation, NOT a guaranteed torque cap.
+    kp: 20.0
+    kd: 1.0
+    close_speed_rad_s: 0.15 # Conservative initial test setting; bounded by existing SDK velocity limit.
+    contact_torque_nm: 2.2 # abs(measured torque): stop closing, then regulate contact.
+    hold_gain_rad_s_per_nm: 0.05 # Bounded position-target correction per fresh sample.
+    hold_deadband_nm: 0.1
+    max_target_lead_rad: 0.15 # No accumulated position error against a stalled jaw.
   grasp_assessment:
     contact_torque_nm: 1.5 # abs(measured feedback) strictly greater; never commanded tau.
     min_grasp_width_m: 0.05 # Inclusive boundary.
