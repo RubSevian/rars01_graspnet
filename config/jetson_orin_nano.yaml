@@ -20,7 +20,7 @@ graspnet:
 # NAV → поиск cup → GraspNet → RETREAT → HOME6. Настройки миссии находятся здесь, без отдельного YAML.
 go2_mission:
   # full — полная миссия; ready_observe — NAV/ready/YOLO/GraspNet без исполнения хвата.
-  test_mode: ready_observe
+  test_mode: full
   # Mission choices only. Robot gains, kinematics and safety TTLs stay authoritative.
   # Версия формата конфигурации автономной миссии.
   version: 1
@@ -75,14 +75,19 @@ go2_mission:
     journal_path: runtime/rars_auto_home/enable-journal
   grasp_verification:
     # Режим соответствующего раздела: stub — без доказательства хвата, stop_and_observe — поиск с остановками.
-    mode: stub # Completion of a closing command does not verify an object.
+    mode: torque_width # Preliminary measured torque/width confirmation; physical full mode remains gated.
     # Максимальная длительность команды закрытия губок, с; достижение упора завершает её раньше.
     close_duration_s: 2.0 # bounded torque-close phase, then preserve gripper command
     max_attempts: 2
     requested_motor_torque_limit_nm: 2.2
-    min_inner_width_m: 0.05 # Успех требует строго большего раскрытия.
+    max_total_torque_nm: 2.2 # Full MIT target; NOT a proven controller-side limit.
+    min_inner_width_m: 0.05 # Legacy declaration; assessment accepts width >= 0.05 m.
     motor_torque_cap_validated: false # SDK ограничивает tau, не доказывает полный MIT-момент.
     motor_torque_cap_evidence: ''
+  grasp_assessment:
+    contact_torque_nm: 1.5 # abs(measured feedback) strictly greater; never commanded tau.
+    min_grasp_width_m: 0.05 # Inclusive boundary.
+    confirmation_duration_s: 0.5 # Continuous source-sample interval; any violation resets.
   gripper_observation:
     # Включить только информационное наблюдение/запись; не является условием движения.
     enabled: true # informational only; never a motion/HOME gate
