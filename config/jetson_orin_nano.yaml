@@ -214,6 +214,12 @@ go2_mission:
     # Допуск конечного достижения суставов owner, рад; не мгновенный tracking guard.
     joint_reached_tolerance_rad: 0.02
   collision:
+    # APPROACH/RETREAT: существующие STL губок при max_grasp_width_m (0.100 м).
+    # Это аппроксимация, НЕ гарантия collision-free при фактическом раскрытии.
+    # Swept volume отменён оператором. Физический автономный RETREAT запрещён
+    # до проверки реальных зазоров; software PASS не является такой проверкой.
+    retreat_physical_clearance_validated: false
+    retreat_physical_clearance_evidence: ''
     arm_joint_measurement_tolerance_rad: 0.03490658503988659 # ±2° только для измеренной геометрии.
     gripper_closed_measurement_tolerance_rad: 0.08726646259971647 # 5° ниже физического нуля: геометрия закрытых губок; положительные углы сохраняют реальное раскрытие.
     # Current operator-approved scope: arm self-collision and arm against Go2.
