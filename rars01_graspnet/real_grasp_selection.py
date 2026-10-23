@@ -84,6 +84,7 @@ def _select_executable_grasp(
     path_validator=None,
     rejection_diagnostics=None,
     local_height_filters_enabled: bool = True,
+    cancel_check=None,
 ) -> Optional[ExecutableGrasp]:
     if type(local_height_filters_enabled) is not bool:
         raise ValueError("local_height_filters_enabled must be boolean")
@@ -159,6 +160,7 @@ def _select_executable_grasp(
     lower, upper = ik_checker.joint_limits()
     executable: list[ExecutableGrasp] = []
     for candidate in pose_candidates:
+        if cancel_check is not None:cancel_check()
         (
             original_idx,
             branch_index,
