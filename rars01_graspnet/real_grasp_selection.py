@@ -83,7 +83,10 @@ def _select_executable_grasp(
     candidate_selection_cfg: dict[str, Any],
     path_validator=None,
     rejection_diagnostics=None,
+    local_height_filters_enabled: bool = True,
 ) -> Optional[ExecutableGrasp]:
+    if type(local_height_filters_enabled) is not bool:
+        raise ValueError("local_height_filters_enabled must be boolean")
     def reject(reason, **parameters):
         if rejection_diagnostics is not None:
             rejection_diagnostics.append(dict(reason=reason, **parameters))
@@ -169,7 +172,7 @@ def _select_executable_grasp(
         ) = candidate
         flip = bool(branch_index)
         candidate_label = f"rank={original_idx + 1} flip={int(flip)}"
-        if not all(
+        if local_height_filters_enabled and not all(
             _pose_z_ok(pose, min_base_z_m) for pose in (pre6d, grasp6d, retreat6d)
         ):
             skipped_low += 1
@@ -177,7 +180,8 @@ def _select_executable_grasp(
             print(f"[Candidate] {candidate_label} reject=base_z")
             continue
         if (
-            robot_backend == "rars01"
+            local_height_filters_enabled
+            and robot_backend == "rars01"
             and min(
                 grasp_driver.minimum_jaw_height(pose, float(grasp.width))
                 for pose in (pre6d, grasp6d, retreat6d)

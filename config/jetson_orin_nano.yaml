@@ -22,6 +22,8 @@ graspnet:
 
 # NAV → поиск cup → GraspNet → RETREAT → HOME6. Настройки миссии находятся здесь, без отдельного YAML.
 go2_mission:
+  # Оператор: локальная плоскость основания руки не является столом/полом Go2.
+  local_height_filters_enabled: false # Только min_base_z_m/min_jaw_z_m; IK и коллизии сохраняются.
   # full — полная миссия; ready_observe — NAV/ready/YOLO/GraspNet без исполнения хвата.
   test_mode: full
   # Mission choices only. Robot gains, kinematics and safety TTLs stay authoritative.
@@ -152,9 +154,9 @@ go2_mission:
     tf_lookup_attempts_per_tick: 8 # Ограничение проверок подходящих пар за один tick.
     # Gross discontinuity guards, not permission to move during manipulation.
     # Порог крупного скачка положения сцены, м.
-    continuity_translation_m: 0.10
+    continuity_translation_m: 0.25 # Временно для теста: 25 см, согласовано оператором.
     # Порог крупного скачка ориентации сцены, рад.
-    continuity_rotation_rad: 0.20
+    continuity_rotation_rad: 0.4363323129985824 # Временно для теста: 25 градусов.
   search:
     # Режим соответствующего раздела: stub — без доказательства хвата, stop_and_observe — поиск с остановками.
     mode: stop_and_observe # continuous is reserved; rejected until implemented
@@ -197,7 +199,7 @@ go2_mission:
     # Допустимое изменение ориентации базы за окно стабилизации, рад.
     max_rotation_rad: 0.08726646259971647
     # Предел абсолютного наклона базы для работы руки, рад.
-    max_tilt_rad: 0.20
+    max_tilt_rad: 0.4363323129985824 # Временно для теста: 25 градусов.
     # Предельное ожидание стабильного окна базы, с.
     timeout_s: 15
   execution:
