@@ -82,10 +82,15 @@ def _select_executable_grasp(
     cartesian_ik_cfg: dict[str, Any],
     candidate_selection_cfg: dict[str, Any],
     path_validator=None,
+    rejection_diagnostics=None,
 ) -> Optional[ExecutableGrasp]:
+    def reject(reason, **parameters):
+        if rejection_diagnostics is not None:
+            rejection_diagnostics.append(dict(reason=reason, **parameters))
     ranked = _rank_grasps(grasps, apply_nms=apply_nms)
     top_count = min(len(ranked), candidate_limit)
     if top_count == 0:
+        reject("NO_CANDIDATES")
         return None
     top_scores = np.asarray(ranked.scores[:top_count], dtype=np.float64)
     grasp_costs = normalized_grasp_costs(top_scores)
@@ -104,6 +109,7 @@ def _select_executable_grasp(
         grasp = ranked[idx]
         if float(grasp.depth) > max_grasp_depth_m:
             skipped_depth += 1
+            reject("DEPTH_LIMIT", rank=idx+1, measured_m=float(grasp.depth), limit_m=max_grasp_depth_m)
             print(f"[Candidate] rank={idx + 1} reject=depth")
             continue
         orientation_candidates = (
@@ -167,6 +173,7 @@ def _select_executable_grasp(
             _pose_z_ok(pose, min_base_z_m) for pose in (pre6d, grasp6d, retreat6d)
         ):
             skipped_low += 1
+            reject("BASE_HEIGHT_LIMIT", candidate=candidate_label, minimum_m=min(float(p[2]) for p in (pre6d,grasp6d,retreat6d)), limit_m=min_base_z_m)
             print(f"[Candidate] {candidate_label} reject=base_z")
             continue
         if (
@@ -177,6 +184,7 @@ def _select_executable_grasp(
             ) < min_jaw_z_m
         ):
             skipped_jaw += 1
+            reject("JAW_HEIGHT_LIMIT", candidate=candidate_label, limit_m=min_jaw_z_m)
             print(f"[Candidate] {candidate_label} reject=jaw_z")
             continue
 
@@ -218,6 +226,8 @@ def _select_executable_grasp(
         worst_err = max(worst_err, pre.error, grasp_solution.error, retreat.error)
         if not (pre.success and grasp_solution.success and retreat.success):
             skipped_ik += 1
+            reject("IK_OR_CARTESIAN_PATH", candidate=candidate_label,
+                   failed_stage="pregrasp" if not pre.success else "approach" if not grasp_solution.success else "retreat")
             print(f"[Candidate] {candidate_label} reject=IK_or_cartesian_path")
             continue
 

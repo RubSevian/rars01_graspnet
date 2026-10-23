@@ -7,6 +7,9 @@ camera:
   sdk_queue_size: null # Без изменения SDK;1/2/10 только для отдельно разрешённого camera A/B.
   sdk_config_path: null # null: XML из установленного pyorbbecsdk; создаётся временная копия.
 
+detection:
+  conf_threshold: 0.25 # Тестовый порог YOLO, согласован оператором 2026-10-23.
+
 yolo:
   text_encoder_subprocess: true # Подготовить названия классов в отдельном CPU-процессе и освободить его память до прогрева YOLO.
   text_encoder_timeout_s: 120.0 # Максимальное ожидание подготовки классов; при ошибке старт не допускается.
@@ -28,6 +31,7 @@ go2_mission:
   physical_enabled: true
   # Класс YOLO, который ищем для захвата.
   object_class: cup
+  object_class_aliases: ["light blue coffee cup"] # То же целевое семейство чашек.
   compute:
     # Число вычислительных потоков perception/BLAS/OpenCV; наследуется GraspNet worker.
     inference_nice: 5 # Linux nice только вычислительного потока/его GraspNet child; ROS callbacks и FIFO20 не меняются. 0 — прежний приоритет.
@@ -166,10 +170,11 @@ go2_mission:
     speed_rad_s: 0.20
     # Пауза после подтверждённого достижения позы перед съёмкой, с.
     settle_s: 1.0
-    # Число свежих последовательных YOLO-кадров для принятия найденной цели.
-    observations: 3
+    # До 5 свежих кадров на позицию; достаточно 2 согласованных, не обязательно подряд.
+    observations: 5
+    confirmation_frames: 2
     # Минимальная уверенность YOLO для класса object_class.
-    confidence: 0.5
+    confidence: 0.25 # Тест: совпадает с detection.conf_threshold.
     # Допустимое смещение центра цели между кадрами одной попытки, пиксели.
     max_center_shift_px: 35
     # Срок ограниченного поиска, включая переходы, расчёт геометрии и наблюдения, с.
@@ -200,7 +205,7 @@ go2_mission:
     arm_state_transport: typed
     # Максимальный возраст RGB-D кадра при получении для обработки, с.
     # Отдельно от свежести живого feedback руки; поза берётся из истории на момент кадра.
-    camera_max_age_s: 0.60
+    camera_max_age_s: 1.00 # 1000 мс, согласовано оператором 2026-10-23.
     observation_retry_delay_s: 0.25 # Пауза перед новой попыткой наблюдения в той же позе; новый request id.
     observation_recovery_timeout_s: 30 # Общий срок восстановления наблюдения, не TTL кадра/feedback; затем BLOCKED.
     camera_admission_candidates: 1 # Штатно один кадр. Эксперимент 3 кандидата не подтвердил выигрыш под полной нагрузкой; TTL/skew не меняются.
@@ -209,10 +214,12 @@ go2_mission:
     arm_speed_rad_s: 0.10
     # Срок актуальности статусов и новых команд mission, с.
     heartbeat_ttl_s: 0.25
+    r3_status_ttl_s: 0.50 # Согласовано 2026-10-23: только locomotion_status в Mission; не RL watchdog/LowState.
     nav_status_ttl_s: 0.60 # Только status процесса NAV; не odometry/TF или command lease.
     perception_status_ttl_s: 0.50 # Только status процесса; не camera/scene TTL.
     # Период Python FSM/health таймера, с.
     tick_s: 0.02
+    detection_debug_enabled: true # Только обработанные YOLO-кадры, bounded queue, JPEG+JSON.
     diagnostic_log_interval_s: 1.0 # Минимальный интервал записи изменений причины готовности; health публикуется каждый tick.
     # Общий срок arm-этапа, включая планирование и исполнение, с.
     state_timeout_s: 180 # includes geometry computation and physical segment time
