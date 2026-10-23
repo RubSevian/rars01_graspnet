@@ -113,6 +113,7 @@ go2_mission:
     # Каталог JSONL относительно workspace; файл автоматически создаётся на mission session.
     directory: runtime/gripper_observation
   frames:
+    leg_feedback_max_age_s: 0.5 # Возраст измерений ног для сцены; watchdog R3 и TTL руки остаются прежними.
     # NAV-профиль в paths; frame NAV vehicle в frames.
     navigation: vehicle
     # Корневой frame манипулятора.
@@ -195,8 +196,8 @@ go2_mission:
     # Предельное ожидание стабильного окна базы, с.
     timeout_s: 15
   execution:
-    # yaml — совместимость; typed — ArmFastState, включать после проверки нового owner.
-    arm_state_transport: yaml
+    # typed — проверенный ArmFastState для Mission/Perception; YAML остаётся для диагностики.
+    arm_state_transport: typed
     # Максимальный возраст RGB-D кадра при получении для обработки, с.
     # Отдельно от свежести живого feedback руки; поза берётся из истории на момент кадра.
     camera_max_age_s: 0.60
