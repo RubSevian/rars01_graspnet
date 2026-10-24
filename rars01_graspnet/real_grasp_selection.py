@@ -9,7 +9,7 @@ import numpy as np
 from utils import graspnet_utils
 from graspnetAPI import Grasp, GraspGroup
 from rars01_graspnet.real_grasp_ik import IkChecker, IkSolution, _plan_cartesian_segment
-from rars01_graspnet.grasp_selection import normalized_grasp_costs, joint_limit_cost, motion_cost
+from rars01_graspnet.grasp_selection import normalized_grasp_costs, joint_limit_cost, motion_cost, best_validated_candidate
 _PARALLEL_FLIP_X = np.diag([1., -1., -1.])
 
 @dataclass(frozen=True)
@@ -85,6 +85,7 @@ def _select_executable_grasp(
     rejection_diagnostics=None,
     local_height_filters_enabled: bool = True,
     cancel_check=None,
+    selection_metrics=None,
 ) -> Optional[ExecutableGrasp]:
     if type(local_height_filters_enabled) is not bool:
         raise ValueError("local_height_filters_enabled must be boolean")
@@ -278,10 +279,8 @@ def _select_executable_grasp(
             )
         )
 
-    if path_validator is not None:
-        executable = [candidate for candidate in executable if path_validator(candidate)]
-    if executable:
-        selected = min(executable, key=lambda item: item.cost)
+    selected = best_validated_candidate(executable, path_validator, cancel_check=cancel_check, metrics=selection_metrics)
+    if selected is not None:
         print(
             f"[G] Selected rank cost={selected.cost:.6f} raw_score={selected.raw_score:.6f} "
             f"depth={float(selected.grasp.depth):.6f}m flip={int(selected.flip)}"

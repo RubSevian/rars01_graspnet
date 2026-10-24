@@ -96,6 +96,7 @@ class IkChecker:
 
     def solve(self, x, y, z, roll, pitch, yaw, reference_joints=None):
         started = time.monotonic()
+        cpu_started = time.thread_time()
         if self.cancel_check is not None:
             self.cancel_check()
         reference = (self.current_joints() if reference_joints is None else
@@ -125,6 +126,7 @@ class IkChecker:
             raise
         finally:
             record['elapsed_s'] = time.monotonic() - started
+            record['thread_cpu_s'] = time.thread_time() - cpu_started
             record['attempt_count'] = len(record['attempts'])
             if self.diagnostics is not None:
                 self.diagnostics.append(record)

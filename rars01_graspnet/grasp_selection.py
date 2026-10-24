@@ -44,3 +44,30 @@ def motion_cost(
     if normalization <= 0.0:
         raise ValueError("motion normalization must be positive")
     return float(np.clip(distance / normalization, 0.0, 1.0))
+
+
+def best_validated_candidate(candidates, path_validator=None, *, cancel_check=None, metrics=None):
+    """Stable cost order preserves exhaustive filter-then-min selection.
+
+    Costs must be finite and validation must not change candidate costs. A
+    timeout/cancellation is propagated, never treated as geometric rejection.
+    """
+    candidates = list(candidates)
+    if any(not np.isfinite(item.cost) for item in candidates):
+        raise ValueError("nonfinite grasp candidate cost")
+    ranked = sorted(enumerate(candidates), key=lambda pair: pair[1].cost)
+    if metrics is not None:
+        metrics.update(candidate_count=len(candidates), checked_count=0,
+                       selected_original_index=None, selected_cost=None)
+    for original_index, candidate in ranked:
+        if cancel_check is not None:
+            cancel_check()
+        if path_validator is not None:
+            if metrics is not None:
+                metrics['checked_count'] += 1
+            if not path_validator(candidate):
+                continue
+        if metrics is not None:
+            metrics.update(selected_original_index=original_index, selected_cost=float(candidate.cost))
+        return candidate
+    return None
