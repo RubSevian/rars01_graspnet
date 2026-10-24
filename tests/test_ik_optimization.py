@@ -26,6 +26,11 @@ def test_cache_uses_exact_target_and_seed_and_resets():
     c.solve(*pose,reference_joints=q+.001)
     assert not logs[-1]['cache_hit']
     assert logs[-1]['attempts'][0]['iterations'] > 0
+    record=logs[-1]
+    np.testing.assert_allclose(np.array(record['joints'])+record['upper_margin_rad'],record['joint_upper_rad'])
+    np.testing.assert_allclose(np.array(record['joints'])-record['lower_margin_rad'],record['joint_lower_rad'])
+    assert len(record['attempts'][0]['joints'])==6
+    assert record['position_tolerance_m']==c._position_tolerance_m
     c.begin_operation(logs);c.solve(*pose,reference_joints=q)
     assert not logs[-1]['cache_hit']
 

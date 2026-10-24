@@ -134,7 +134,7 @@ robot:
       grasp_orientation_tolerance_deg: 3.0
       velocity_tolerance_deg_s: 2.0
       settle_time_s: 0.2
-      timeout_margin_s: 5.5
+      timeout_margin_s: 5.0
       max_feedback_age_s: 0.10
 yolo:
   # Та же модель, которая используется в базовом конфиге оригинального проекта.

@@ -57,10 +57,12 @@ def _worker_main(connection: Any, checkpoint: str, num_view: int) -> None:
                 request["num_point"], request["min_depth"], request["max_depth"],
                 visualize=False,
             )
+            stage_arrays={} if request.get("include_diagnostics",True) else None
             grasps, counts = graspnet_utils.infer_grasps(
                 net, end_points, raw_cloud, request["collision_thresh"],
-                request["voxel_size"],
+                request["voxel_size"], diagnostics=stage_arrays,
             )
+            filter_counts = dict(counts, after_cloud_collision=len(grasps.grasp_group_array))
             diagnostics=request.get("include_diagnostics",True)
             pre_bbox = grasps.grasp_group_array.copy() if diagnostics else None
             bbox = request.get("bbox_xyxy")
@@ -72,23 +74,35 @@ def _worker_main(connection: Any, checkpoint: str, num_view: int) -> None:
                     image_shape=request["color_bgr"].shape[:2],
                 )
             bbox_grasps = grasps.grasp_group_array.copy() if diagnostics else None
+            filter_counts['after_bbox'] = len(grasps.grasp_group_array)
             grasps = graspnet_utils.filter_grasps_by_width(
                 grasps, request.get("max_grasp_width_m")
             )
+            filter_counts['after_width'] = len(grasps.grasp_group_array)
+            width_grasps = grasps.grasp_group_array.copy() if diagnostics else None
             grasps = graspnet_utils.filter_grasps_by_depth(
                 grasps, request.get("max_grasp_depth_m")
             )
+            filter_counts['after_depth'] = len(grasps.grasp_group_array)
             response={
                 "type": "result",
                 "grasps": grasps.grasp_group_array,
                 "counts": counts,
+                "filter_counts": filter_counts,
+                "filter_parameters": dict(bbox_xyxy=bbox,
+                    target_margin_px=request['target_margin_px'],
+                    target_expand_ratio=request['target_expand_ratio'],
+                    max_grasp_width_m=request.get('max_grasp_width_m'),
+                    max_grasp_depth_m=request.get('max_grasp_depth_m'),
+                    collision_thresh=request['collision_thresh'],voxel_size=request['voxel_size']),
                 "elapsed_s": time.monotonic() - started,
             }
-            if diagnostics:response.update(pre_bbox_grasps=pre_bbox,bbox_grasps=bbox_grasps)
+            if diagnostics:response.update(pre_bbox_grasps=pre_bbox,bbox_grasps=bbox_grasps,
+                width_grasps=width_grasps,**stage_arrays)
             connection.send(response)
             # recv() may block throughout NAV. Do not retain the last RGB-D
             # request or CUDA feature tensors while waiting for the next job.
-            del request, end_points, raw_cloud, grasps, pre_bbox, bbox_grasps, counts, response, _
+            del request, end_points, raw_cloud, grasps, pre_bbox, bbox_grasps, width_grasps, stage_arrays, counts, response, _
     except BaseException as exc:
         try:
             connection.send({"type": "error", "error": f"{type(exc).__name__}: {exc}"})

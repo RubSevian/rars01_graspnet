@@ -119,6 +119,11 @@ class IkChecker:
                           position_error_m=float(result.position_error_m),
                           orientation_error_rad=float(result.orientation_error_rad),
                           reason='OK' if result.success else 'IK_OR_FK_TOLERANCE_OR_LIMIT')
+            record.update(joint_lower_rad=self._lower.tolist(),joint_upper_rad=self._upper.tolist(),
+                          lower_margin_rad=(result.joints-self._lower).tolist(),
+                          upper_margin_rad=(self._upper-result.joints).tolist(),
+                          position_tolerance_m=self._position_tolerance_m,
+                          orientation_tolerance_rad=self._orientation_tolerance_rad)
             return IkSolution(result.success, result.error, result.joints.copy(),
                               result.position_error_m, result.orientation_error_rad)
         except Exception as error:
@@ -193,7 +198,9 @@ class IkChecker:
                 record['attempts'].append(dict(seed=seed.tolist(), elapsed_s=time.monotonic()-started,
                     iterations=result.iterations, termination=result.termination, reason=reason,
                     error=float(result.error), position_error_m=position_error,
-                    orientation_error_rad=orientation_error))
+                    orientation_error_rad=orientation_error,joints=q.tolist(),
+                    lower_margin_rad=(q-self._lower).tolist(),
+                    upper_margin_rad=(self._upper-q).tolist()))
             if best_result is None or float(result.error) < float(best_result.error):
                 best_result = result
                 best_errors = (position_error, orientation_error)
@@ -239,8 +246,11 @@ def _plan_cartesian_segment(
     start_joints: np.ndarray,
     cartesian_cfg: dict[str, Any],
     label: str,
+    verbose: bool = True,
 ) -> Optional[tuple[np.ndarray, ...]]:
     """Solve a constant-orientation Cartesian segment as continuous IK points."""
+    def report(*args):
+        if verbose:print(*args)
     waypoint_count = int(cartesian_cfg["waypoint_count"])
     warn_step_rad = np.deg2rad(float(cartesian_cfg["joint_step_warn_deg"]))
     reject_step_rad = np.deg2rad(float(cartesian_cfg["max_joint_step_deg"]))
@@ -257,7 +267,7 @@ def _plan_cartesian_segment(
         max_joint_index = int(np.argmax(delta))
         max_delta = float(delta[max_joint_index])
         status = "OK" if solution.success else "FAIL"
-        print(
+        report(
             f"[Cartesian/{label}] waypoint={waypoint_index}/{waypoint_count} "
             f"target_xyz={np.round(np.asarray(target[:3]), 5).tolist()} "
             f"target_rpy={np.round(np.asarray(target[3:]), 5).tolist()} "
@@ -274,17 +284,17 @@ def _plan_cartesian_segment(
                 reason = "FK orientation error exceeds tolerance"
             else:
                 reason = "IK did not converge or target violates joint limits"
-            print(f"[Cartesian/{label}] reject: {reason}")
+            report(f"[Cartesian/{label}] reject: {reason}")
             return None
         if max_delta > reject_step_rad:
-            print(
+            report(
                 f"[Cartesian/{label}] reject: joint {max_joint_index + 1} step "
                 f"{np.rad2deg(max_delta):.2f} deg exceeds "
                 f"{np.rad2deg(reject_step_rad):.2f} deg"
             )
             return None
         if max_delta > warn_step_rad:
-            print(
+            report(
                 f"[Cartesian/{label}] warning: joint {max_joint_index + 1} step "
                 f"{np.rad2deg(max_delta):.2f} deg exceeds "
                 f"{np.rad2deg(warn_step_rad):.2f} deg"

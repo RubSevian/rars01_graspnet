@@ -29,8 +29,11 @@ def exercise(diagnostics,n=10000,crash=False):
         assert kwargs['visualize'] is False
         if crash:raise ValueError('synthetic failure')
         return {},None,np.zeros((8,3))
+    def infer(*args,diagnostics=None):
+        if diagnostics is not None:diagnostics['decoded_grasps']=array.copy()
+        return Group(array),{'decoded':n}
     fake=types.SimpleNamespace(build_net=lambda *a:object(),build_end_points=points,
-        infer_grasps=lambda *a:(Group(array),{'decoded':n}),
+        infer_grasps=infer,
         filter_grasps_by_bbox=lambda g,*a,**kw:Group(g.grasp_group_array[::2]),
         filter_grasps_by_width=lambda g,*a:Group(g.grasp_group_array[::2]),
         filter_grasps_by_depth=lambda g,*a:g)
@@ -47,8 +50,38 @@ class MemoryTests(unittest.TestCase):
             full=exercise(True,n);lean=exercise(False,n)
             np.testing.assert_array_equal(full['grasps'],lean['grasps'])
             self.assertEqual(full['counts'],lean['counts'])
+            self.assertEqual(lean['filter_counts'],dict(decoded=n,after_cloud_collision=n,
+                after_bbox=n//2,after_width=n//4,after_depth=n//4))
+            self.assertEqual(lean['filter_parameters']['bbox_xyxy'],(0,0,4,4))
             self.assertNotIn('pre_bbox_grasps',lean);self.assertNotIn('bbox_grasps',lean)
             self.assertIn('pre_bbox_grasps',full);self.assertIn('bbox_grasps',full)
+            self.assertNotIn('decoded_grasps',lean)
+            np.testing.assert_array_equal(full['decoded_grasps'],np.arange(n*17).reshape(n,17))
+    def test_decoded_snapshot_is_taken_before_cloud_collision(self):
+        from contextlib import nullcontext
+        source=ast.parse((ROOT/'utils/graspnet_utils.py').read_text())
+        fn=next(n for n in source.body if isinstance(n,ast.FunctionDef) and n.name=='infer_grasps')
+        array=np.arange(3*17,dtype=float).reshape(3,17)
+        class G(Group):
+            def __len__(self):return len(self.grasp_group_array)
+            def __getitem__(self,mask):return G(self.grasp_group_array[mask])
+        class Tensor:
+            def detach(self):return self
+            def cpu(self):return self
+            def numpy(self):return array.copy()
+        detector=types.SimpleNamespace(detect=lambda *a,**kw:np.array([True,False,True]))
+        scope=dict(np=np,torch=types.SimpleNamespace(no_grad=nullcontext),pred_decode=lambda _: [Tensor()],
+            GraspNet=object,GraspGroup=G,DEFAULT_VOXEL_SIZE=.01,Optional=__import__('typing').Optional,
+            ModelFreeCollisionDetector=lambda *a,**kw:detector)
+        exec(compile(ast.Module(body=[fn],type_ignores=[]),'infer_grasps','exec'),scope)
+        audit={}
+        full,counts=scope['infer_grasps'](lambda x:x,{},np.zeros((4,3)),.01,diagnostics=audit)
+        lean,lean_counts=scope['infer_grasps'](lambda x:x,{},np.zeros((4,3)),.01)
+        np.testing.assert_array_equal(audit['decoded_grasps'],array)
+        np.testing.assert_array_equal(full.grasp_group_array,array[1:2])
+        np.testing.assert_array_equal(lean.grasp_group_array,full.grasp_group_array)
+        self.assertEqual(counts,lean_counts);self.assertEqual(counts['collision_removed'],2)
+
     def test_worker_error_closes_pipe(self):
         self.assertEqual(exercise(False,crash=True)['type'],'error')
     def test_preprocessing_numbers_unchanged_when_visualizer_skipped(self):

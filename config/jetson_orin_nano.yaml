@@ -38,6 +38,7 @@ go2_mission:
     # Число вычислительных потоков perception/BLAS/OpenCV; наследуется GraspNet worker.
     inference_nice: 5 # Linux nice только вычислительного потока/его GraspNet child; ROS callbacks и FIFO20 не меняются. 0 — прежний приоритет.
     cpu_threads: 1 # perception/BLAS/OpenCV; inherited by spawned GraspNet worker
+    grasp_debug_enabled: true # Один сменный снимок GraspNet до/после фильтров для grasp_viewer.
     grasp_full_diagnostics: false # true: пересылать pre_bbox/bbox массивы; mission использует только grasps.
   startup:
     camera_probe_frames: 3 # Разные свежие RGB/depth кадры до разрешения запуска NAV/контроллеров.
@@ -83,7 +84,7 @@ go2_mission:
     # Режим соответствующего раздела: stub — без доказательства хвата, stop_and_observe — поиск с остановками.
     mode: torque_width # Preliminary measured torque/width confirmation; physical full mode remains gated.
     # Максимальная длительность команды закрытия губок, с; достижение упора завершает её раньше.
-    close_duration_s: 8.0 # Full range at 0.15 rad/s plus confirmation; bounded contact control.
+    close_duration_s: 9.0 # Предел попытки сохранён: ход при 0.25 рад/с + 2 с подтверждения с запасом.
     max_attempts: 2
     min_inner_width_m: 0.05 # Legacy declaration; assessment accepts width >= 0.05 m.
     motor_torque_cap_validated: false # Informational only: no guaranteed instantaneous torque cap is claimed.
@@ -92,7 +93,7 @@ go2_mission:
     mode: measured_contact # Sampled SDK feedback regulation, NOT a guaranteed torque cap.
     kp: 20.0
     kd: 1.0
-    close_speed_rad_s: 0.15 # Conservative initial test setting; bounded by existing SDK velocity limit.
+    close_speed_rad_s: 0.25 # Скорость задания угла закрытия; ограничена лимитом SDK.
     contact_torque_nm: 2.2 # abs(measured torque): stop closing, then regulate contact.
     hold_gain_rad_s_per_nm: 0.05 # Bounded position-target correction per fresh sample.
     hold_deadband_nm: 0.1
@@ -100,10 +101,11 @@ go2_mission:
   grasp_assessment:
     contact_torque_nm: 1.5 # abs(measured feedback) strictly greater; never commanded tau.
     min_grasp_width_m: 0.05 # Inclusive boundary.
-    confirmation_duration_s: 0.5 # Continuous source-sample interval; any violation resets.
+    confirmation_duration_s: 2.0 # Continuous source-sample interval; any violation resets.
   gripper_observation:
     # Включить только информационное наблюдение/запись; не является условием движения.
     enabled: true # informational only; never a motion/HOME gate
+    recording_enabled: false # Временный тест без записи telemetry на диск.
     # Пробный минимум |измеренного момента| мотора7, Нм; не калиброван, не задаёт силу.
     min_abs_torque_nm: 1.0 # provisional, NOT calibrated; not the 2.5 Nm command
     # Максимальная |скорость губок| для признака удержания, рад/с.
@@ -180,7 +182,7 @@ go2_mission:
     # Допустимое смещение центра цели между кадрами одной попытки, пиксели.
     max_center_shift_px: 35
     # Срок ограниченного поиска, включая переходы, расчёт геометрии и наблюдения, с.
-    timeout_s: 360 # whole search: motion, geometry computation, settle and frames
+    timeout_s: null # Поиск ограничен углами и количеством поз, не временем.
     # 0 → −2.5 → 0 → +2.5 с шагом 0.5 рад, включая повторные наблюдения.
     max_attempts: 16
     # Use authoritative ready_pose Cartesian target, subject to full path checking.
@@ -204,11 +206,13 @@ go2_mission:
     # Предельное ожидание стабильного окна базы, с.
     timeout_s: 15
   execution:
+    short_journal_enabled: true # Только события и итоги расчётов; без периодической telemetry/JPEG.
+    diagnostic_recording_enabled: false # Временно без JSONL поз/IK/ног; краткие live-статусы сохраняются.
     # typed — проверенный ArmFastState для Mission/Perception; YAML остаётся для диагностики.
     arm_state_transport: typed
     # Максимальный возраст RGB-D кадра при получении для обработки, с.
     # Отдельно от свежести живого feedback руки; поза берётся из истории на момент кадра.
-    camera_max_age_s: 1.00 # 1000 мс, согласовано оператором 2026-10-23.
+    camera_max_age_s: 2.00 # 2000 мс, согласовано оператором 2026-10-24; исходные timestamps сохраняются.
     observation_retry_delay_s: 0.25 # Пауза перед новой попыткой наблюдения в той же позе; новый request id.
     observation_recovery_timeout_s: 30 # Общий срок восстановления наблюдения, не TTL кадра/feedback; затем BLOCKED.
     camera_admission_candidates: 1 # Штатно один кадр. Эксперимент 3 кандидата не подтвердил выигрыш под полной нагрузкой; TTL/skew не меняются.
@@ -222,14 +226,14 @@ go2_mission:
     perception_status_ttl_s: 1.00 # Только status процесса; не camera/scene TTL.
     # Период Python FSM/health таймера, с.
     tick_s: 0.02
-    detection_debug_enabled: true # Только обработанные YOLO-кадры, bounded queue, JPEG+JSON.
+    detection_debug_enabled: true # Просмотр YOLO; при отключённой diagnostic_recording — только два сменных JPEG и latest.json.
     diagnostic_log_interval_s: 1.0 # Минимальный интервал записи изменений причины готовности; health публикуется каждый tick.
     # Общий срок arm-этапа, включая планирование и исполнение, с.
-    state_timeout_s: 180 # includes geometry computation and physical segment time
+    state_timeout_s: null # Отключён: планирование/этап завершается по результату или отмене.
     # Общий срок активной миссии после принятия NAV-цели, с.
-    mission_timeout_s: 900
+    mission_timeout_s: null # Общий срок миссии отключён.
     # Срок достижения цели навигацией, с.
-    navigation_timeout_s: 120
+    navigation_timeout_s: null # Навигация завершается по результату или отмене.
     # Предельная длительность одного segment; также задаёт ограниченный размер parser, с.
     max_plan_duration_s: 180
     # Допуск measured q к началу траектории owner, рад.
@@ -256,7 +260,7 @@ go2_mission:
     # Численный запас широкого геометрического отсева, м.
     broadphase_padding_m: 0.000000001 # conservative extra AABB separation guard
     # Вычислительный бюджет одного collision pass, с; не RL watchdog.
-    check_timeout_s: 90.0 # geometry pass for wide initial sweep; request deadline still applies; not the RL watchdog
+    check_timeout_s: null # Временной бюджет отключён; коллизии и отмена проверяются.
     # Минимальный clearance для проверяемых пар, м; 1e-6м=0.001мм.
     margin_m: 0.000001 # 0.001 mm; clearance only, reported intersections still block
     # Operator-requested joint1 exception: mutual self-collision only, all poses.

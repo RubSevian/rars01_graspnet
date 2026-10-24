@@ -86,14 +86,34 @@ def _select_executable_grasp(
     local_height_filters_enabled: bool = True,
     cancel_check=None,
     selection_metrics=None,
+    candidate_diagnostics=None,
+    verbose=True,
 ) -> Optional[ExecutableGrasp]:
+    def report(*args):
+        if verbose:print(*args)
     if type(local_height_filters_enabled) is not bool:
         raise ValueError("local_height_filters_enabled must be boolean")
     def reject(reason, **parameters):
         if rejection_diagnostics is not None:
             rejection_diagnostics.append(dict(reason=reason, **parameters))
+        if candidate_diagnostics is not None:
+            for item in candidate_diagnostics['orientations']:
+                if item['candidate'] == parameters.get('candidate'):
+                    item.update(status='rejected',reason=reason,**parameters)
+                    break
     ranked = _rank_grasps(grasps, apply_nms=apply_nms)
     top_count = min(len(ranked), candidate_limit)
+    if selection_metrics is not None:
+        selection_metrics.update(input_count=len(grasps),after_nms=len(ranked),
+            candidate_limit=int(candidate_limit),after_candidate_limit=top_count)
+    if candidate_diagnostics is not None:
+        candidate_diagnostics.update(input_count=len(grasps),after_nms=len(ranked),
+            nms_enabled=bool(apply_nms),nms_translation_threshold_m=.03,
+            nms_rotation_threshold_rad=float(np.deg2rad(30.)),
+            candidate_limit=int(candidate_limit),after_candidate_limit=top_count,
+            pregrasp_offset_m=float(pregrasp_offset_m),retreat_offset_m=float(retreat_offset_m),
+            position_compensation_base_m=np.asarray(position_compensation_base_m).tolist(),
+            ranked_grasps=ranked.grasp_group_array.tolist(),orientations=[])
     if top_count == 0:
         reject("NO_CANDIDATES")
         return None
@@ -115,7 +135,7 @@ def _select_executable_grasp(
         if float(grasp.depth) > max_grasp_depth_m:
             skipped_depth += 1
             reject("DEPTH_LIMIT", rank=idx+1, measured_m=float(grasp.depth), limit_m=max_grasp_depth_m)
-            print(f"[Candidate] rank={idx + 1} reject=depth")
+            report(f"[Candidate] rank={idx + 1} reject=depth")
             continue
         orientation_candidates = (
             (grasp, _parallel_flip_grasp(grasp)) if allow_parallel_flip else (grasp,)
@@ -133,7 +153,7 @@ def _select_executable_grasp(
                 # Both equivalent parallel-gripper orientations are checked here.
                 allow_parallel_flip=False,
             )
-            print(
+            report(
                 "[G/transform] "
                 f"translation={np.round(oriented_grasp.translation, 6).tolist()} "
                 f"depth={float(oriented_grasp.depth):.6f} "
@@ -143,6 +163,14 @@ def _select_executable_grasp(
             grasp6d = _translate_pose(grasp6d, position_compensation_base_m)
             pre6d = _translate_pose(pre6d, position_compensation_base_m)
             retreat6d = _translate_pose(retreat6d, position_compensation_base_m)
+            if candidate_diagnostics is not None:
+                candidate_diagnostics['orientations'].append(dict(
+                    candidate=f'rank={idx + 1} flip={branch_index}',rank=idx+1,flip=bool(branch_index),
+                    raw_score=float(grasp.score),width_m=float(grasp.width),depth_m=float(grasp.depth),
+                    translation_camera_m=np.asarray(oriented_grasp.translation).tolist(),
+                    rotation_camera=np.asarray(oriented_grasp.rotation_matrix).tolist(),
+                    grasp_End_link_pose6d=list(grasp6d),pregrasp_End_link_pose6d=list(pre6d),
+                    retreat_End_link_pose6d=list(retreat6d),status='awaiting_ik'))
             pose_candidates.append(
                 (
                     idx,
@@ -180,7 +208,7 @@ def _select_executable_grasp(
         ):
             skipped_low += 1
             reject("BASE_HEIGHT_LIMIT", candidate=candidate_label, minimum_m=min(float(p[2]) for p in (pre6d,grasp6d,retreat6d)), limit_m=min_base_z_m)
-            print(f"[Candidate] {candidate_label} reject=base_z")
+            report(f"[Candidate] {candidate_label} reject=base_z")
             continue
         if (
             local_height_filters_enabled
@@ -192,7 +220,7 @@ def _select_executable_grasp(
         ):
             skipped_jaw += 1
             reject("JAW_HEIGHT_LIMIT", candidate=candidate_label, limit_m=min_jaw_z_m)
-            print(f"[Candidate] {candidate_label} reject=jaw_z")
+            report(f"[Candidate] {candidate_label} reject=jaw_z")
             continue
 
         if hasattr(ik_checker, "context"):
@@ -202,7 +230,7 @@ def _select_executable_grasp(
         retreat_waypoints: tuple[np.ndarray, ...] = ()
         if robot_backend == "rars01" and pre.success:
             approach_waypoints = _plan_cartesian_segment(
-                ik_checker, pre6d, grasp6d, pre.joints, cartesian_ik_cfg, "approach"
+                ik_checker, pre6d, grasp6d, pre.joints, cartesian_ik_cfg, "approach", verbose=verbose
             ) or ()
             if approach_waypoints:
                 grasp_solution = IkSolution(True, 0.0, approach_waypoints[-1])
@@ -212,7 +240,7 @@ def _select_executable_grasp(
                     retreat6d,
                     grasp_solution.joints,
                     cartesian_ik_cfg,
-                    "retreat",
+                    "retreat", verbose=verbose,
                 ) or ()
                 retreat = (
                     IkSolution(True, 0.0, retreat_waypoints[-1])
@@ -237,7 +265,7 @@ def _select_executable_grasp(
             skipped_ik += 1
             reject("IK_OR_CARTESIAN_PATH", candidate=candidate_label,
                    failed_stage="pregrasp" if not pre.success else "approach" if not grasp_solution.success else "retreat")
-            print(f"[Candidate] {candidate_label} reject=IK_or_cartesian_path")
+            report(f"[Candidate] {candidate_label} reject=IK_or_cartesian_path")
             continue
 
         # This is the exact chain that will be streamed to the arm.
@@ -256,7 +284,7 @@ def _select_executable_grasp(
             + weight_joint * limit_cost
             + weight_motion * path_cost
         )
-        print(
+        report(
             f"[Candidate] {candidate_label} raw_score={raw_score:.6f} "
             f"normalized_score={normalized_score:.6f} J_grasp={grasp_cost:.6f} "
             f"J_joint={limit_cost:.6f} J_motion={path_cost:.6f} J_total={total_cost:.6f}"
@@ -279,21 +307,40 @@ def _select_executable_grasp(
             )
         )
 
+    if selection_metrics is not None:
+        selection_metrics.update(ik_feasible=len(executable),orientations_generated=len(pose_candidates),
+            rejected_depth=skipped_depth,rejected_base_height=skipped_low,
+            rejected_jaw_height=skipped_jaw,rejected_ik=skipped_ik)
     selected = best_validated_candidate(executable, path_validator, cancel_check=cancel_check, metrics=selection_metrics)
+    if selection_metrics is not None:
+        selection_metrics['selected_candidate']=next((f'rank={c[0]+1} flip={c[1]}'
+            for c in pose_candidates if selected is not None and c[2] is selected.grasp),None)
+    if candidate_diagnostics is not None:
+        candidate_diagnostics.update(ik_feasible=len(executable),
+            rejected_depth=skipped_depth,rejected_base_height=skipped_low,
+            rejected_jaw_height=skipped_jaw,rejected_ik=skipped_ik)
+        for item in candidate_diagnostics['orientations']:
+            if item['status']=='awaiting_ik':item['status']='ik_feasible'
+        candidate_diagnostics['selected']=None
+        if selected is not None:
+            for candidate in pose_candidates:
+                if candidate[2] is selected.grasp:
+                    candidate_diagnostics['selected']=f'rank={candidate[0]+1} flip={candidate[1]}'
+                    break
     if selected is not None:
-        print(
+        report(
             f"[G] Selected rank cost={selected.cost:.6f} raw_score={selected.raw_score:.6f} "
             f"depth={float(selected.grasp.depth):.6f}m flip={int(selected.flip)}"
         )
         if robot_backend == "rars01":
             selected_tcp = grasp_driver.grasp_tcp_transform(float(selected.grasp.width))
-            print(
+            report(
                 "[G] jaw center in End_link [m]: "
                 f"{np.round(selected_tcp[:3, 3], 5).tolist()}"
             )
         return selected
 
-    print(
+    report(
         f"[G] No executable grasp: depth={skipped_depth} low_z={skipped_low} jaw_z={skipped_jaw} "
         f"ik_fail={skipped_ik} max_err={worst_err:.4f}"
     )

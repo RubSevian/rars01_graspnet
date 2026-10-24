@@ -239,12 +239,14 @@ def infer_grasps(
     raw_cloud: np.ndarray,
     collision_thresh: float,
     voxel_size: float = DEFAULT_VOXEL_SIZE,
+    *, diagnostics: Optional[dict] = None,
 ) -> tuple[GraspGroup, dict[str, int]]:
     with torch.no_grad():
         end_points = net(end_points)
         grasp_preds = pred_decode(end_points)
 
     gg = GraspGroup(grasp_preds[0].detach().cpu().numpy())
+    if diagnostics is not None:diagnostics["decoded_grasps"] = gg.grasp_group_array.copy()
     decoded_count = len(gg)
     collision_removed = 0
     if len(gg) > 0 and collision_thresh > 0:
