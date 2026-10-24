@@ -194,6 +194,8 @@ def _select_executable_grasp(
             print(f"[Candidate] {candidate_label} reject=jaw_z")
             continue
 
+        if hasattr(ik_checker, "context"):
+            ik_checker.context = dict(candidate=candidate_label, stage="pregrasp", waypoint=0)
         pre = ik_checker.solve(*pre6d, reference_joints=current_joints)
         approach_waypoints: tuple[np.ndarray, ...] = ()
         retreat_waypoints: tuple[np.ndarray, ...] = ()

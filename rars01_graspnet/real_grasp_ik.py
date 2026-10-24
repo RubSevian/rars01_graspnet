@@ -5,6 +5,8 @@ Mechanically extracted from scripts/grasp.py; no SDK or camera imports.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
+from collections import OrderedDict
 from typing import Any, Optional
 
 import numpy as np
@@ -35,6 +37,10 @@ class IkChecker:
         )
         from rars01_graspnet.pinocchio_math import IKParams
 
+        self.cancel_check = None
+        self.diagnostics = None
+        self.context = {}
+        self._cache = OrderedDict()
         self._arm = arm
         self._arm_group = arm.groups.get("arm")
         if self._arm_group is None:
@@ -81,7 +87,49 @@ class IkChecker:
         orientation_error = float(np.arccos(cosine))
         return position_error, orientation_error
 
-    def solve(
+    def begin_operation(self, diagnostics, cancel_check=None):
+        """One worker owns this checker. Never reuse a cache across operations."""
+        self._cache.clear()
+        self.diagnostics = diagnostics
+        self.cancel_check = cancel_check
+        self.context = {}
+
+    def solve(self, x, y, z, roll, pitch, yaw, reference_joints=None):
+        started = time.monotonic()
+        if self.cancel_check is not None:
+            self.cancel_check()
+        reference = (self.current_joints() if reference_joints is None else
+                     np.asarray(reference_joints, dtype=float).reshape(self._n))
+        pose = (x, y, z, roll, pitch, yaw)
+        key = (np.asarray(pose, dtype=float).tobytes(), reference.tobytes())
+        record = dict(self.context, target_pose6d=list(map(float, pose)),
+                      reference_joints=reference.tolist(), attempts=[], cache_hit=False)
+        try:
+            if key in self._cache:
+                record['cache_hit'] = True
+                result = self._cache[key]
+            else:
+                result = self._solve_uncached(*pose, reference_joints=reference, record=record)
+                if len(self._cache) >= 512:
+                    self._cache.popitem(last=False)
+                self._cache[key] = result
+            record.update(success=bool(result.success), error=float(result.error),
+                          joints=result.joints.tolist(),
+                          position_error_m=float(result.position_error_m),
+                          orientation_error_rad=float(result.orientation_error_rad),
+                          reason='OK' if result.success else 'IK_OR_FK_TOLERANCE_OR_LIMIT')
+            return IkSolution(result.success, result.error, result.joints.copy(),
+                              result.position_error_m, result.orientation_error_rad)
+        except Exception as error:
+            record.update(success=False, reason=str(error))
+            raise
+        finally:
+            record['elapsed_s'] = time.monotonic() - started
+            record['attempt_count'] = len(record['attempts'])
+            if self.diagnostics is not None:
+                self.diagnostics.append(record)
+
+    def _solve_uncached(
         self,
         x: float,
         y: float,
@@ -90,6 +138,7 @@ class IkChecker:
         pitch: float,
         yaw: float,
         reference_joints: Optional[np.ndarray] = None,
+        record=None,
     ) -> IkSolution:
         reference = (
             self.current_joints()
@@ -106,20 +155,43 @@ class IkChecker:
 
         best_result = None
         best_errors = (float("inf"), float("inf"))
+        seen_seeds = set()
+        data = self._model.createData()
         for seed in seeds:
-            result = self._solve_ik(
-                self._model,
-                self._model.createData(),
-                self._end_frame_id,
-                target,
-                self._pad_q_for_model(self._model, seed, self._n),
-                self._params,
-                controlled_joints=self._n,
-            )
+            seed_key = seed.tobytes()
+            if seed_key in seen_seeds:
+                continue
+            seen_seeds.add(seed_key)
+            started = time.monotonic()
+            try:
+                result = self._solve_ik(
+                    self._model,
+                    data,
+                    self._end_frame_id,
+                    target,
+                    self._pad_q_for_model(self._model, seed, self._n),
+                    self._params,
+                    controlled_joints=self._n,
+                    cancel_check=self.cancel_check,
+                )
+            except Exception as error:
+                if record is not None:
+                    record['attempts'].append(dict(seed=seed.tolist(), elapsed_s=time.monotonic()-started,
+                        termination='interrupted', reason=str(error), iterations=None))
+                raise
             q = np.asarray(result.q[:self._n], dtype=np.float64)
             position_error, orientation_error = self.fk_errors(
                 (x, y, z, roll, pitch, yaw), q
             )
+            if record is not None:
+                reason = ('JOINT_LIMIT' if np.any(q < self._lower) or np.any(q > self._upper)
+                          else 'FK_POSITION' if position_error > self._position_tolerance_m
+                          else 'FK_ORIENTATION' if orientation_error > self._orientation_tolerance_rad
+                          else 'SOLVER_NOT_CONVERGED' if not result.success else 'OK')
+                record['attempts'].append(dict(seed=seed.tolist(), elapsed_s=time.monotonic()-started,
+                    iterations=result.iterations, termination=result.termination, reason=reason,
+                    error=float(result.error), position_error_m=position_error,
+                    orientation_error_rad=orientation_error))
             if best_result is None or float(result.error) < float(best_result.error):
                 best_result = result
                 best_errors = (position_error, orientation_error)
@@ -176,6 +248,8 @@ def _plan_cartesian_segment(
     for waypoint_index in range(1, waypoint_count + 1):
         alpha = waypoint_index / waypoint_count
         target = _cartesian_waypoint_pose(start6d, end6d, alpha)
+        if hasattr(ik_checker, "context"):
+            ik_checker.context.update(stage=label, waypoint=waypoint_index)
         solution = ik_checker.solve(*target, reference_joints=previous)
         delta = np.abs(solution.joints - previous)
         max_joint_index = int(np.argmax(delta))

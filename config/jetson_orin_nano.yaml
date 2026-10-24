@@ -213,7 +213,7 @@ go2_mission:
     observation_recovery_timeout_s: 30 # Общий срок восстановления наблюдения, не TTL кадра/feedback; затем BLOCKED.
     camera_admission_candidates: 1 # Штатно один кадр. Эксперимент 3 кандидата не подтвердил выигрыш под полной нагрузкой; TTL/skew не меняются.
     camera_admission_attempts: 3 # До трёх НОВЫХ пачек при истечении TTL; TTL каждого остаётся 600 мс, общий deadline операции сохраняется.
-    # Ограничение scan_pose/refine/HOME, рад/с; объектные траектории используют лимиты приводов.
+    # Ограничение refine/HOME, рад/с; scan_pose и объектные траектории используют лимиты приводов.
     arm_speed_rad_s: 0.10
     # Срок актуальности статусов и новых команд mission, с.
     heartbeat_ttl_s: 0.25
@@ -233,7 +233,7 @@ go2_mission:
     # Предельная длительность одного segment; также задаёт ограниченный размер parser, с.
     max_plan_duration_s: 180
     # Допуск measured q к началу траектории owner, рад.
-    start_tolerance_rad: 0.02
+    start_tolerance_rad: 0.025
     # Допуск конечного достижения суставов owner, рад; не мгновенный tracking guard.
     joint_reached_tolerance_rad: 0.02
   collision:
@@ -243,8 +243,8 @@ go2_mission:
     # до проверки реальных зазоров; software PASS не является такой проверкой.
     retreat_physical_clearance_validated: false
     retreat_physical_clearance_evidence: ''
-    arm_joint_measurement_tolerance_rad: 0.03490658503988659 # ±2° только для измеренной геометрии.
-    gripper_closed_measurement_tolerance_rad: 0.08726646259971647 # 5° ниже физического нуля: геометрия закрытых губок; положительные углы сохраняют реальное раскрытие.
+    arm_joint_measurement_tolerance_rad: 0.025 # ±0.025 рад для измеренной геометрии; совпадает с допуском старта.
+    gripper_closed_measurement_tolerance_rad: 0.025 # Симметричная зона нуля ±0.025 рад для геометрии и допуска старта; исходный feedback MIT не меняется.
     # Current operator-approved scope: arm self-collision and arm against Go2.
     # External floor/boxes/depth and carried-object geometry are currently disabled.
     # Проверять внешние препятствия; сейчас отключено по указанию оператора.

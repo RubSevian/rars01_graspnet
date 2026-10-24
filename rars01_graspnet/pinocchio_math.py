@@ -26,6 +26,7 @@ class IKResult:
     success: bool
     error: float
     iterations: int
+    termination: str = "iteration_limit"
 
 
 def get_end_effector_frame_id(model: pin.Model) -> int:
@@ -82,19 +83,22 @@ def _error(model, data, frame, q, target):
 
 
 def solve_ik(model, data, end_frame_id, target, q_init,
-             params=None, controlled_joints=None):
+             params=None, controlled_joints=None, cancel_check=None):
     """Damped local-frame IK with four-step backtracking.
 
     Keep the baseline iteration policy (including refinement after reaching
-    tolerance) so candidate ranking and the selected solution do not change.
+    tolerance). Stop only at an exact deterministic fixed point; repeating
+    the same rejected step cannot improve the result.
     """
     params = params or IKParams()
     n = model.nq if controlled_joints is None else controlled_joints
     q = pad_q_for_model(model, q_init, n)
     norm, error = _error(model, data, end_frame_id, q, target)
     if norm < params.tolerance:
-        return IKResult(q[:n], True, norm, 0)
-    for _ in range(params.max_iter):
+        return IKResult(q[:n], True, norm, 0, "initial_converged")
+    for iteration in range(params.max_iter):
+        if cancel_check is not None:
+            cancel_check()
         pin.computeJointJacobians(model, data, q)
         jacobian = pin.getFrameJacobian(model, data, end_frame_id, pin.LOCAL)
         matrix = jacobian @ jacobian.T
@@ -106,6 +110,8 @@ def solve_ik(model, data, end_frame_id, target, q_init,
             if new_norm < norm:
                 q, norm, error = candidate, new_norm, new_error
                 break
+        else:
+            return IKResult(q[:n], norm < params.tolerance, norm, iteration + 1, "no_improving_step")
     return IKResult(q[:n], norm < params.tolerance, norm, params.max_iter)
 
 
