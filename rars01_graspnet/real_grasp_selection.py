@@ -9,7 +9,7 @@ import numpy as np
 from utils import graspnet_utils
 from graspnetAPI import Grasp, GraspGroup
 from rars01_graspnet.real_grasp_ik import IkChecker, IkSolution, _plan_cartesian_segment
-from rars01_graspnet.grasp_selection import normalized_grasp_costs, joint_limit_cost, motion_cost, best_validated_candidate
+from rars01_graspnet.grasp_selection import normalized_grasp_costs, joint_limit_cost, motion_cost, best_validated_candidate, candidate_cost_terms
 _PARALLEL_FLIP_X = np.diag([1., -1., -1.])
 
 @dataclass(frozen=True)
@@ -88,6 +88,7 @@ def _select_executable_grasp(
     selection_metrics=None,
     candidate_diagnostics=None,
     verbose=True,
+    max_grasp_width_m=0.100,
 ) -> Optional[ExecutableGrasp]:
     def report(*args):
         if verbose:print(*args)
@@ -275,15 +276,18 @@ def _select_executable_grasp(
                 pre.joints,
                 *(approach_waypoints or (grasp_solution.joints,)),
                 *(retreat_waypoints or (retreat.joints,)),
+                current_joints,  # Checked return to the saved scan pose.
             )
         )
-        limit_cost = joint_limit_cost(chain, lower, upper)
-        path_cost = motion_cost(chain, lower, upper, motion_normalization)
-        total_cost = (
-            weight_grasp * grasp_cost
-            + weight_joint * limit_cost
-            + weight_motion * path_cost
-        )
+        terms = candidate_cost_terms(chain, lower, upper, grasp_cost,
+            float(grasp.width), max_grasp_width_m,
+            np.asarray(grasp6d[:3])-np.asarray(pre6d[:3]), candidate_selection_cfg)
+        limit_cost, path_cost, total_cost = terms['joint'], terms['motion'], terms['total']
+        if candidate_diagnostics is not None:
+            for item in candidate_diagnostics['orientations']:
+                if item['candidate'] == candidate_label:
+                    item['cost_terms'] = terms
+                    item['width_reserve_m'] = max_grasp_width_m-float(grasp.width)
         report(
             f"[Candidate] {candidate_label} raw_score={raw_score:.6f} "
             f"normalized_score={normalized_score:.6f} J_grasp={grasp_cost:.6f} "

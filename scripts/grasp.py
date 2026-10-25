@@ -553,9 +553,9 @@ def main() -> int:
     ):
         raise ValueError("cartesian_ik joint step thresholds must satisfy 0 < warn <= reject")
     candidate_selection_cfg = dict(grasp_cfg.get("candidate_selection", {}))
-    candidate_selection_cfg.setdefault("weight_grasp", 0.50)
+    candidate_selection_cfg.setdefault("weight_grasp", 0.35)
     candidate_selection_cfg.setdefault("weight_joint", 0.25)
-    candidate_selection_cfg.setdefault("weight_motion", 0.25)
+    candidate_selection_cfg.setdefault("weight_motion", 0.30)
     candidate_selection_cfg.setdefault("motion_normalization", 2.0)
     weights = np.asarray(
         [
@@ -927,6 +927,7 @@ def main() -> int:
                     ik_candidate_limit,
                     cartesian_ik_cfg,
                     candidate_selection_cfg,
+                    max_grasp_width_m=max_grasp_width_m,
                 )
                 if selected is None:
                     print(f"[G] No IK-reachable grasp above min_base_z={min_base_z_m:.3f}m ")

@@ -177,14 +177,17 @@ grasp_pipeline:
       max_joint_step_deg: 15.0
       ik_position_tolerance_m: 0.004
       ik_orientation_tolerance_deg: 7.5
-    # J = 0.50 * J_grasp + 0.25 * J_joint + 0.25 * J_motion.
-    # motion_normalization is the full normalized joint-range path length
-    # which corresponds to J_motion = 1.
+    # Минимизируем J. IK и коллизии остаются обязательными проверками.
     candidate_selection:
-      weight_grasp: 0.50
-      weight_joint: 0.25
-      weight_motion: 0.25
-      motion_normalization: 2.0
+      weight_grasp: 0.35 # Качество GraspNet после min-max; не вероятность успеха.
+      weight_motion: 0.30 # Весь маршрут до возврата в исходную позу сканирования.
+      weight_joint: 0.25 # Максимальная близость суставов к пределам на маршруте.
+      weight_width: 0.10 # Штраф за недостаточный запас раскрытия, не запрет.
+      desired_width_reserve_m: 0.010 # Суммарно между двумя губками; экспериментальные 10 мм.
+      motion_normalization: 2.0 # L0 в L/(L+L0), без жёсткого потолка. При L=L0 штраф 0.5.
+      weight_direction: 0.0 # 0: нет предпочтения сверху/сбоку. Дополнительный вес.
+      preferred_approach_base: [0.0, 0.0, -1.0] # Только при весе >0; направление в базе руки, НЕ вертикаль мира.
+    # Штраф направления = (1-cos угла)/2; раскрытия = max(0,(запас_желаемый-запас)/запас_желаемый)^2.
     min_base_z_m: 0.000 # Минимальная Z цели в base_link, м.
     # Минимальная высота внутренних точек обеих губок над плоскостью стола.
     min_jaw_z_m: 0.02

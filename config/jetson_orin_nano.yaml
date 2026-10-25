@@ -188,11 +188,12 @@ go2_mission:
     max_attempts: 16
     # Use authoritative ready_pose Cartesian target, subject to full path checking.
   refinement:
-    enabled: false # Skip camera recenter motion; fresh grasp-plan RGB-D remains required.
+    enabled: true # Доворот только joint1 в позе сканирования без проверки коллизий.
+    max_yaw_rad: 0.5 # Максимальный доворот за одно уточнение; внутри углов поиска и лимитов руки.
+    horizontal_tolerance_rad: 0.02 # Допуск горизонтального угла цели относительно оптической оси.
     # Максимальная корректировка камеры или изменение базы за settle window, м — по разделу.
-    max_translation_m: 0.02
-    # Доля поперечного смещения цели, используемая для малой корректировки камеры.
-    gain: 0.2
+    max_translation_m: 0.02 # Legacy: не используется в режиме доворота joint1.
+    gain: 0.2 # Legacy: перенос камеры через IK отключён.
     # Число свежих YOLO/RGB-D кадров перед вызовом GraspNet.
     fresh_frames: 4
   settle:

@@ -39,10 +39,14 @@ def test_jetson_config_inherits_robot_and_overrides_memory_profile():
     }
     selection = config["grasp_pipeline"]["grasp"]["candidate_selection"]
     assert selection == {
-        "weight_grasp": 0.50,
+        "weight_grasp": 0.35,
         "weight_joint": 0.25,
-        "weight_motion": 0.25,
+        "weight_motion": 0.30,
         "motion_normalization": 2.0,
+        "weight_width": 0.10,
+        "desired_width_reserve_m": 0.010,
+        "weight_direction": 0.0,
+        "preferred_approach_base": [0.0, 0.0, -1.0],
     }
     assert config["yolo"]["model_name"] == "yoloe-26s-seg.pt"
     assert config["graspnet"]["num_point"] == 10000

@@ -33,8 +33,11 @@ def motion_cost(
     lower: np.ndarray,
     upper: np.ndarray,
     normalization: float,
+    *, smooth: bool = True,
 ) -> float:
     """Normalized accumulated joint motion for the executed configuration chain."""
+    if not np.isfinite(normalization) or normalization <= 0:
+        raise ValueError("motion normalization must be finite and positive")
     q = np.asarray(configurations, dtype=np.float64)
     if len(q) < 2:
         return 0.0
@@ -43,7 +46,7 @@ def motion_cost(
     distance = float(np.linalg.norm(normalized_steps, axis=1).sum())
     if normalization <= 0.0:
         raise ValueError("motion normalization must be positive")
-    return float(np.clip(distance / normalization, 0.0, 1.0))
+    return float(distance / (distance + normalization) if smooth else np.clip(distance / normalization, 0.0, 1.0))
 
 
 def best_validated_candidate(candidates, path_validator=None, *, cancel_check=None, metrics=None):
@@ -71,3 +74,29 @@ def best_validated_candidate(candidates, path_validator=None, *, cancel_check=No
             metrics.update(selected_original_index=original_index, selected_cost=float(candidate.cost))
         return candidate
     return None
+
+
+def candidate_cost_terms(chain, lower, upper, grasp_cost, width, max_width, approach, config):
+    """Full-route ranking only; never replaces IK or collision admission."""
+    weights = {k: float(config.get('weight_'+k, default)) for k, default in
+               [('grasp', .35), ('motion', .30), ('joint', .25), ('width', .10), ('direction', 0.)]}
+    reserve = float(config.get('desired_width_reserve_m', .010))
+    if (not all(np.isfinite(v) and v >= 0 for v in weights.values()) or
+            sum(weights.values()) <= 0 or not np.isfinite(reserve) or reserve <= 0 or
+            not np.isfinite(max_width) or max_width <= 0 or not np.isfinite(width) or width < 0):
+        raise ValueError('invalid candidate selection weights or width reserve')
+    terms = dict(grasp=float(grasp_cost),
+                 motion=motion_cost(chain, lower, upper, float(config.get('motion_normalization', 2.))),
+                 joint=joint_limit_cost(chain, lower, upper),
+                 width=float(max(0., (reserve-(max_width-width))/reserve)**2), direction=0.)
+    if weights['direction'] > 0:
+        preferred = np.asarray(config.get('preferred_approach_base', [0., 0., -1.]), dtype=float)
+        actual = np.asarray(approach, dtype=float)
+        if (preferred.shape != (3,) or actual.shape != (3,) or
+                not np.isfinite(preferred).all() or not np.isfinite(actual).all() or
+                np.linalg.norm(preferred) == 0 or np.linalg.norm(actual) == 0):
+            raise ValueError('invalid candidate approach direction')
+        terms['direction'] = float((1.-np.clip(np.dot(preferred,actual)/
+            (np.linalg.norm(preferred)*np.linalg.norm(actual)), -1., 1.))/2.)
+    terms['total'] = sum(weights[k]*terms[k] for k in weights)
+    return terms

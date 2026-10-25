@@ -1,6 +1,7 @@
 import numpy as np
 
 from rars01_graspnet.grasp_selection import (
+    candidate_cost_terms,
     joint_limit_cost,
     motion_cost,
     normalized_grasp_costs,
@@ -18,7 +19,7 @@ def test_joint_and_motion_costs_use_joint_ranges():
     chain = np.array([[0.0, 0.0], [0.5, 1.0], [1.0, 2.0]])
 
     assert joint_limit_cost(chain, lower, upper) == 1.0
-    assert np.isclose(motion_cost(chain, lower, upper, normalization=2.0), np.sqrt(0.125))
+    assert np.isclose(motion_cost(chain, lower, upper, normalization=2.0), np.sqrt(0.5)/(np.sqrt(0.5)+2.))
 
 
 def test_cost_order_matches_exhaustive_validation_with_ties_and_rejections():
@@ -79,7 +80,7 @@ def test_candidate_audit_preserves_selection_and_records_both_orientations(capsy
     def poses(grasp,*a,**kw):
         pose=(.1,.2,.3,0.,0.,0.)
         return pose,pose,pose
-    scope=dict(np=np,normalized_grasp_costs=normalized_grasp_costs,joint_limit_cost=joint_limit_cost,
+    scope=dict(np=np,candidate_cost_terms=candidate_cost_terms,normalized_grasp_costs=normalized_grasp_costs,joint_limit_cost=joint_limit_cost,
         motion_cost=motion_cost,best_validated_candidate=best_validated_candidate,
         _rank_grasps=lambda *a,**k:Group(2),_parallel_flip_grasp=copy.deepcopy,
         graspnet_utils=NS(grasp_to_base_poses=poses),ExecutableGrasp=lambda **kw:NS(**kw),
@@ -116,3 +117,30 @@ def test_candidate_audit_preserves_selection_and_records_both_orientations(capsy
     assert quiet_metrics==plain_metrics
     import json
     json.dumps(audit,allow_nan=False)
+
+
+def test_new_cost_is_direction_neutral_and_width_reserve_soft():
+    import pytest
+    cfg=dict(weight_grasp=.35,weight_motion=.30,weight_joint=.25,weight_width=.10,
+             desired_width_reserve_m=.01,motion_normalization=2.,weight_direction=0.)
+    chain=np.array([[0.],[.5],[0.]])
+    args=(chain,np.array([-1.]),np.array([1.]),.2,.095,.1)
+    a=candidate_cost_terms(*args,[0,0,-1],cfg)
+    b=candidate_cost_terms(*args,[1,0,0],cfg)
+    assert a==b
+    assert a['width']==pytest.approx(.25)
+    assert a['motion']==pytest.approx(.2)
+    assert a['total']==pytest.approx(.35*.2+.30*.2+.25*.25+.10*.25)
+    directed=candidate_cost_terms(*args,[1,0,0],dict(cfg,weight_direction=.1))
+    assert directed['total']==pytest.approx(a['total']+.05)
+    for key,value in [('motion_normalization',0),('desired_width_reserve_m',0),('weight_width',float('nan'))]:
+        with pytest.raises(ValueError):candidate_cost_terms(*args,[0,0,-1],dict(cfg,**{key:value}))
+
+
+def test_longer_motion_is_not_clipped_and_return_increases_cost():
+    lo=np.array([-1.]);hi=np.array([1.])
+    short=np.array([[0.],[1.]])
+    long=np.tile([[0.],[1.]],(10,1))
+    longer=np.tile([[0.],[1.]],(20,1))
+    assert motion_cost(short,lo,hi,2)<motion_cost(np.vstack([short,[0.]]),lo,hi,2)
+    assert motion_cost(long,lo,hi,2)<motion_cost(longer,lo,hi,2)<1
