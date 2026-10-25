@@ -17,7 +17,7 @@ yolo:
   device: cuda:0 # Выполнять YOLO на GPU Jetson.
 
 graspnet:
-  num_point: 10000 # Число точек RGB-D для одного GraspNet infer.
+  num_point: 20000 # С 2026-10-25: больше точек для проверки разнообразия кандидатов; ранее 10000.
   top_k: 20 # Лимит вывода исходных Grasp/demo; mission candidate limit наследуется из default.yaml.
 
 # NAV → поиск cup → GraspNet → RETREAT → HOME6. Настройки миссии находятся здесь, без отдельного YAML.
@@ -149,6 +149,7 @@ go2_mission:
     leg_collector_period_ms: 20 # Период доставки пачки в Python; частота приёма LowState не ограничивается.
     leg_collector_capacity: 512 # Максимум ожидающих измерений; переполнения видны в health, stamps не обновляются.
     arm_history_depth: 32 # Очередь реальных feedback для сопоставления с odometry; не продлевает TTL измерений.
+    arm_feedback_max_age_s: 0.50 # Свежесть руки для сцены; watchdog контроллера остаётся отдельным.
     odometry_buffer_size: 512 # Внутренняя ограниченная история измерений для exact odometry/TF pairing.
     scene_receive_depth: 32 # DDS-очередь odometry/TF, отдельно от истории; максимум сообщений за callback.
     odometry_history_s: 1.0 # Срок хранения; допуск свежести сцены берётся из NAV YAML.
