@@ -190,7 +190,8 @@ def build_end_points(
     num_point: int,
     min_depth_m: float,
     max_depth_m: float,
-    *, visualize: bool = True,
+    *, visualize: bool = True, target_mask=None, mask_source='unknown',
+    target_roi=None, sampling_diagnostics=None,
 ) -> tuple[dict, Any | None, np.ndarray]:
     if color_bgr.shape[:2] != depth_mm.shape[:2]:
         depth_mm = cv2.resize(depth_mm, (color_bgr.shape[1], color_bgr.shape[0]), interpolation=cv2.INTER_NEAREST)
@@ -209,13 +210,20 @@ def build_end_points(
     cloud_masked = cloud[mask]
     color_masked = color_rgb[mask]
 
-    if len(cloud_masked) >= num_point:
-        idxs = np.random.choice(len(cloud_masked), num_point, replace=False)
+    pool = np.arange(len(cloud_masked))
+    if target_roi is not None:
+        from rars01_graspnet.graspnet_roi import inference_region
+        pool, detail = inference_region(cloud_masked, mask, target_mask, mask_source, target_roi)
+        if sampling_diagnostics is not None:
+            sampling_diagnostics.update(detail)
+
+    if len(pool) >= num_point:
+        idxs = np.random.choice(pool, num_point, replace=False)
     else:
         idxs = np.concatenate(
             [
-                np.arange(len(cloud_masked)),
-                np.random.choice(len(cloud_masked), num_point - len(cloud_masked), replace=True),
+                pool,
+                np.random.choice(pool, num_point - len(pool), replace=True),
             ],
             axis=0,
         )

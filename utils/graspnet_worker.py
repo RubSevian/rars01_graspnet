@@ -52,10 +52,13 @@ def _worker_main(connection: Any, checkpoint: str, num_view: int) -> None:
                 continue
 
             started = time.monotonic()
+            sampling = {}
             end_points, _, raw_cloud = graspnet_utils.build_end_points(
                 request["color_bgr"], request["depth_mm"], request["K"],
                 request["num_point"], request["min_depth"], request["max_depth"],
                 visualize=False,
+                target_mask=request.get('target_mask'), mask_source=request.get('mask_source','unknown'),
+                target_roi=request.get('target_roi'), sampling_diagnostics=sampling,
             )
             stage_arrays={} if request.get("include_diagnostics",True) else None
             grasps, counts = graspnet_utils.infer_grasps(
@@ -89,7 +92,7 @@ def _worker_main(connection: Any, checkpoint: str, num_view: int) -> None:
                 "grasps": grasps.grasp_group_array,
                 "counts": counts,
                 "filter_counts": filter_counts,
-                "filter_parameters": dict(bbox_xyxy=bbox,
+                "filter_parameters": dict(bbox_xyxy=bbox, target_roi=sampling,
                     target_margin_px=request['target_margin_px'],
                     target_expand_ratio=request['target_expand_ratio'],
                     max_grasp_width_m=request.get('max_grasp_width_m'),
@@ -156,12 +159,18 @@ class GraspNetWorker:
         max_grasp_depth_m: Optional[float],
         timeout_s: float,
         include_diagnostics: bool = True,
+        target_mask=None,
+        mask_source: str = 'unknown',
+        target_roi=None,
     ) -> dict[str, Any]:
         if not self._process.is_alive():
             raise RuntimeError("GraspNet worker is not running")
         self._connection.send({
             "type": "infer",
             "include_diagnostics": bool(include_diagnostics),
+            "target_mask": None if target_mask is None else np.ascontiguousarray(target_mask, dtype=bool),
+            "mask_source": mask_source,
+            "target_roi": target_roi,
             "color_bgr": np.ascontiguousarray(color_bgr),
             "depth_mm": np.ascontiguousarray(depth_mm),
             "K": np.asarray(K, dtype=np.float64),

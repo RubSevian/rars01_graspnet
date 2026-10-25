@@ -23,6 +23,7 @@ class YoloDetection:
     conf: float
     bbox_xyxy: tuple[int, int, int, int]
     mask: np.ndarray
+    mask_source: str = "unknown"
 
 
 # Backward-compatible alias for older scripts. New code should use YoloDetection.
@@ -116,7 +117,7 @@ def load_yolo(
     return model, yolo_opts
 
 
-def detection_mask(result: Any, index: int, image_shape: tuple[int, int], bbox_xyxy: tuple[int, int, int, int]) -> np.ndarray:
+def detection_mask(result: Any, index: int, image_shape: tuple[int, int], bbox_xyxy: tuple[int, int, int, int], *, with_source: bool = False):
     h, w = image_shape
     masks = getattr(result, "masks", None)
     data = getattr(masks, "data", None)
@@ -128,14 +129,15 @@ def detection_mask(result: Any, index: int, image_shape: tuple[int, int], bbox_x
                     mask = np.asarray(mask, dtype=np.float32)
                     if mask.shape != (h, w):
                         mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
-                    return (mask > 0.5).astype(np.uint8)
+                    mask = (mask > 0.5).astype(np.uint8)
+                    return (mask, "segmentation") if with_source else mask
         except Exception:
             pass
 
     x1, y1, x2, y2 = bbox_xyxy
     mask = np.zeros((h, w), dtype=np.uint8)
     mask[y1 : y2 + 1, x1 : x2 + 1] = 1
-    return mask
+    return (mask, "bbox") if with_source else mask
 
 
 def obb_points(result: Any, index: int, image_shape: tuple[int, int]) -> Optional[np.ndarray]:
@@ -222,10 +224,13 @@ def collect_detections(results: list[Any], image_shape: tuple[int, int]) -> list
             try:
                 name, conf, bbox = detection_meta(result, detection_index, image_shape)
                 points = obb_points(result, detection_index, image_shape)
-                mask = detection_polygon_mask(points, image_shape) if points is not None else detection_mask(result, detection_index, image_shape, bbox)
+                if points is not None:
+                    mask, mask_source = detection_polygon_mask(points, image_shape), "obb"
+                else:
+                    mask, mask_source = detection_mask(result, detection_index, image_shape, bbox, with_source=True)
             except Exception:
                 continue
-            detections.append(YoloDetection(result_index, detection_index, name, conf, bbox, mask))
+            detections.append(YoloDetection(result_index, detection_index, name, conf, bbox, mask, mask_source))
     return detections
 
 

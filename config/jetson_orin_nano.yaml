@@ -17,11 +17,27 @@ yolo:
   device: cuda:0 # Выполнять YOLO на GPU Jetson.
 
 graspnet:
+  # Только вход сети: границы 3D-маски предмета + окружение по каждой оси камеры.
+  # Полное облако сохраняется для коллизий. Это НЕ расстояние подхода руки.
+  target_roi:
+    enabled: true # false возвращает выборку всей сцены; без маски сегментации включённый режим выдаёт ошибку.
+    margin_m: 0.12 # Запас 12 см с каждой стороны границ предмета.
+    lower_quantile: 0.01 # Границы по 1–99% точек маски с допустимой глубиной: отсечение выбросов.
+    upper_quantile: 0.99
   num_point: 20000 # С 2026-10-25: больше точек для проверки разнообразия кандидатов; ранее 10000.
   top_k: 20 # Лимит вывода исходных Grasp/demo; mission candidate limit наследуется из default.yaml.
 
 # NAV → поиск cup → GraspNet → RETREAT → HOME6. Настройки миссии находятся здесь, без отдельного YAML.
 go2_mission:
+  # Принадлежность захвата предмету по сегментации + глубине, до NMS/IK.
+  # Центр YOLO и направление подхода не задаются; это не проверка контактов/коллизий.
+  target_binding:
+    enabled: true # false отключает только этот дополнительный фильтр.
+    finger_length_m: 0.08 # Рабочая область за кончиком по оси подхода X.
+    finger_height_m: 0.03 # Высота области; по Y используется ширина кандидата GraspNet.
+    voxel_size_m: 0.003 # Одна пространственная ячейка = один голос, независимо от числа пикселей.
+    min_target_voxels: 10 # Минимум наблюдаемых ячеек предмета между губками.
+    min_target_fraction: 0.5 # Минимальная доля ячеек предмета среди всей поверхности в области.
   # Оператор: локальная плоскость основания руки не является столом/полом Go2.
   local_height_filters_enabled: false # Только min_base_z_m/min_jaw_z_m; IK и коллизии сохраняются.
   # full — полная миссия; ready_observe — NAV/ready/YOLO/GraspNet без исполнения хвата.
@@ -32,8 +48,8 @@ go2_mission:
   # Разрешение физической миссии; false оставляет запуск в inspection/read-only.
   physical_enabled: true
   # Класс YOLO, который ищем для захвата.
-  object_class: cup
-  object_class_aliases: ["light blue coffee cup"] # То же целевое семейство чашек.
+  object_class: yellow banana
+  object_class_aliases: ["water bottle"] # Дополнительная допустимая цель миссии.
   compute:
     # Число вычислительных потоков perception/BLAS/OpenCV; наследуется GraspNet worker.
     inference_nice: 5 # Linux nice только вычислительного потока/его GraspNet child; ROS callbacks и FIFO20 не меняются. 0 — прежний приоритет.
@@ -208,6 +224,12 @@ go2_mission:
     # Предельное ожидание стабильного окна базы, с.
     timeout_s: 15
   execution:
+    # Полный цикл без ручного подтверждения отхода, включая NOT_GRASPED.
+    # Отход → сохранённая поза сканирования → HOME; UNKNOWN/ошибки останавливают цикл.
+    # Не меняет физическую квалификацию и проверки коллизий/feedback.
+    # При operator_trial:=true сохраняется прежняя скорость отхода (25%).
+    # false возвращает ручное подтверждение для operator_trial:=true.
+    automatic_retreat: true
     short_journal_enabled: true # Только события и итоги расчётов; без периодической telemetry/JPEG.
     diagnostic_recording_enabled: false # Временно без JSONL поз/IK/ног; краткие live-статусы сохраняются.
     # typed — проверенный ArmFastState для Mission/Perception; YAML остаётся для диагностики.

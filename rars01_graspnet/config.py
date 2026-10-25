@@ -42,6 +42,9 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
     config_path = Path(path) if path else PROJECT_ROOT / "config" / "default.yaml"
     config_path = config_path.expanduser().resolve()
     config = _load_yaml(config_path, set())
+    if 'target_roi' in config.get('graspnet', {}):
+        from .graspnet_roi import validate_roi
+        config['graspnet']['target_roi'] = validate_roi(config['graspnet']['target_roi'])
     config["_config_dir"] = str(config_path.parent)
     return config
 
