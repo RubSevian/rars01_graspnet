@@ -223,7 +223,7 @@ go2_mission:
     heartbeat_ttl_s: 0.25
     r3_status_ttl_s: 0.50 # Согласовано 2026-10-23: только locomotion_status в Mission; не RL watchdog/LowState.
     nav_status_ttl_s: 0.60 # Только status процесса NAV; не odometry/TF или command lease.
-    perception_status_ttl_s: 1.00 # Только status процесса; не camera/scene TTL.
+    perception_status_ttl_s: 1.50 # Только status процесса; не camera/scene TTL.
     # Период Python FSM/health таймера, с.
     tick_s: 0.02
     detection_debug_enabled: true # Просмотр YOLO; при отключённой diagnostic_recording — только два сменных JPEG и latest.json.

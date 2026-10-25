@@ -167,6 +167,8 @@ grasp_pipeline:
     # Систематическую ошибку измерять в base_link и компенсировать здесь.
     position_compensation_base_m: {x: 0.0, y: 0.0, z: 0.0}
     # IK идёт цепочкой pregrasp -> grasp -> retreat и проверяет обе ориентации.
+    # Bounded least-squares runs only after all primary DLS seeds fail.
+    ik_bounded_fallback_enabled: true
     ik_retry_count: 3
     ik_candidate_limit: 20
     cartesian_ik:
@@ -174,7 +176,7 @@ grasp_pipeline:
       joint_step_warn_deg: 10.0
       max_joint_step_deg: 15.0
       ik_position_tolerance_m: 0.004
-      ik_orientation_tolerance_deg: 2.0
+      ik_orientation_tolerance_deg: 7.5
     # J = 0.50 * J_grasp + 0.25 * J_joint + 0.25 * J_motion.
     # motion_normalization is the full normalized joint-range path length
     # which corresponds to J_motion = 1.

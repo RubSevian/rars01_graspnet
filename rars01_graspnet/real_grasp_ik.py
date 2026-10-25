@@ -27,6 +27,7 @@ class IkChecker:
         retry_count: int = 3,
         position_tolerance_m: float = 0.010,
         orientation_tolerance_rad: float = np.deg2rad(5.0),
+        bounded_fallback: bool = False,
     ) -> None:
         from rars01_graspnet.pinocchio_math import (
             compute_fk,
@@ -37,6 +38,9 @@ class IkChecker:
         )
         from rars01_graspnet.pinocchio_math import IKParams
 
+        if type(bounded_fallback) is not bool:
+            raise ValueError("bounded_fallback must be boolean")
+        self._bounded_fallback = bounded_fallback
         self.cancel_check = None
         self.diagnostics = None
         self.context = {}
@@ -56,11 +60,35 @@ class IkChecker:
         self._retry_count = max(0, int(retry_count))
         self._position_tolerance_m = float(position_tolerance_m)
         self._orientation_tolerance_rad = float(orientation_tolerance_rad)
-        if self._position_tolerance_m <= 0.0 or self._orientation_tolerance_rad <= 0.0:
+        if (not np.isfinite([self._position_tolerance_m, self._orientation_tolerance_rad]).all()
+                or self._position_tolerance_m <= 0.0 or self._orientation_tolerance_rad <= 0.0):
             raise ValueError("IK FK tolerances must be positive")
         self._lower = np.asarray(self._model.lowerPositionLimit[:self._n], dtype=np.float64)
         self._upper = np.asarray(self._model.upperPositionLimit[:self._n], dtype=np.float64)
         self._frame_name = self._model.frames[self._end_frame_id].name
+        self._least_squares = None
+        self.solver_preparation = dict(enabled=bounded_fallback, ready=False, elapsed_s=0.)
+        if bounded_fallback:
+            self.prepare_bounded_solver()
+
+    def prepare_bounded_solver(self):
+        """Load and exercise SciPy before mission admission, without robot IO."""
+        if self._least_squares is not None:
+            return dict(self.solver_preparation)
+        started = time.monotonic()
+        from scipy.optimize import least_squares
+        # Exercise numerical Jacobian, TRF and LAPACK with a small bounded
+        # six-joint problem. This is initialization, not reachability approval.
+        center = .5 * (self._lower + self._upper)
+        seed = center + .01 * (self._upper - self._lower)
+        fit = least_squares(lambda q: q - center, seed,
+                            bounds=(self._lower, self._upper), method='trf', max_nfev=20)
+        if not np.isfinite(fit.x).all() or np.linalg.norm(fit.x-center) > 1e-5:
+            raise RuntimeError('BOUNDED_IK_WARMUP_FAILED')
+        self._least_squares = least_squares
+        self.solver_preparation = dict(enabled=True, ready=True,
+                                       elapsed_s=time.monotonic()-started)
+        return dict(self.solver_preparation)
 
     def current_joints(self) -> np.ndarray:
         return np.asarray(
@@ -161,6 +189,7 @@ class IkChecker:
             seeds.append((1.0 - fraction) * reference + fraction * midpoint)
 
         best_result = None
+        best_score = float("inf")
         best_errors = (float("inf"), float("inf"))
         seen_seeds = set()
         data = self._model.createData()
@@ -170,6 +199,26 @@ class IkChecker:
                 continue
             seen_seeds.add(seed_key)
             started = time.monotonic()
+            feasible = None
+            feasible_score = float("inf")
+
+            def observe(q, error, position, rotation):
+                nonlocal feasible, feasible_score
+                position_error = float(np.linalg.norm(position - target.translation))
+                cosine = np.clip((np.trace(target.rotation.T @ rotation) - 1.0) * 0.5, -1., 1.)
+                orientation_error = float(np.arccos(cosine))
+                if (np.isfinite(q).all() and np.all(q >= self._lower)
+                        and np.all(q <= self._upper)
+                        and np.isfinite([position_error, orientation_error]).all()
+                        and position_error <= self._position_tolerance_m
+                        and orientation_error <= self._orientation_tolerance_rad):
+                    score = np.hypot(position_error / self._position_tolerance_m,
+                                     orientation_error / self._orientation_tolerance_rad)
+                    if score < feasible_score:
+                        feasible_score = score
+                        feasible = IkSolution(True, float(error), q.copy(),
+                                              position_error, orientation_error)
+
             try:
                 result = self._solve_ik(
                     self._model,
@@ -180,6 +229,7 @@ class IkChecker:
                     self._params,
                     controlled_joints=self._n,
                     cancel_check=self.cancel_check,
+                    iterate_callback=observe,
                 )
             except Exception as error:
                 if record is not None:
@@ -191,32 +241,40 @@ class IkChecker:
                 (x, y, z, roll, pitch, yaw), q
             )
             if record is not None:
-                reason = ('JOINT_LIMIT' if np.any(q < self._lower) or np.any(q > self._upper)
+                reason = ('NONFINITE' if not np.isfinite(q).all() or not np.isfinite([position_error, orientation_error]).all()
+                          else 'JOINT_LIMIT' if np.any(q < self._lower) or np.any(q > self._upper)
                           else 'FK_POSITION' if position_error > self._position_tolerance_m
                           else 'FK_ORIENTATION' if orientation_error > self._orientation_tolerance_rad
-                          else 'SOLVER_NOT_CONVERGED' if not result.success else 'OK')
+                          else 'OK')
                 record['attempts'].append(dict(seed=seed.tolist(), elapsed_s=time.monotonic()-started,
-                    iterations=result.iterations, termination=result.termination, reason=reason,
+                    method="dls", iterations=result.iterations, termination=result.termination,
+                    reason="OK" if feasible is not None else reason, final_iterate_reason=reason,
+                    solver_success=bool(result.success), accepted=feasible is not None,
+                    accepted_joints=None if feasible is None else feasible.joints.tolist(),
                     error=float(result.error), position_error_m=position_error,
                     orientation_error_rad=orientation_error,joints=q.tolist(),
                     lower_margin_rad=(q-self._lower).tolist(),
                     upper_margin_rad=(self._upper-q).tolist()))
-            if best_result is None or float(result.error) < float(best_result.error):
+            score = float(np.hypot(position_error / self._position_tolerance_m,
+                                   orientation_error / self._orientation_tolerance_rad))
+            if not np.isfinite(score):
+                score = float("inf")
+            if best_result is None or score < best_score:
                 best_result = result
+                best_score = score
                 best_errors = (position_error, orientation_error)
-            if result.success:
-                # Seeds are ordered from the previous chain point toward the
-                # joint-range midpoint, so the first success is the most local.
-                if (
-                    np.all(q >= self._lower)
-                    and np.all(q <= self._upper)
-                    and position_error <= self._position_tolerance_m
-                    and orientation_error <= self._orientation_tolerance_rad
-                ):
-                    return IkSolution(
-                        True, float(result.error), q.copy(), position_error, orientation_error
-                    )
+            # Keep refinement, but do not lose an admissible intermediate pose
+            # when reducing the solver's mixed SE(3) norm violates an FK budget.
+            if feasible is not None:
+                return feasible
         assert best_result is not None
+        if self._bounded_fallback:
+            fallback_seeds = [reference, best_result.q[:self._n], *seeds[1:]]
+            fallback = self._solve_bounded(target, fallback_seeds, record)
+            if fallback.success or np.hypot(
+                    fallback.position_error_m / self._position_tolerance_m,
+                    fallback.orientation_error_rad / self._orientation_tolerance_rad) < best_score:
+                return fallback
         q = np.asarray(best_result.q[:self._n], dtype=np.float64).copy()
         return IkSolution(
             False,
@@ -224,6 +282,84 @@ class IkChecker:
             q,
             *best_errors,
         )
+
+
+    def _solve_bounded(self, target, seeds, record):
+        """Bounded, tolerance-normalized fallback; cancellation runs on every FK.
+
+        Numerical optimizer success is diagnostic only. Admission always uses
+        independent FK budgets and joint limits, including intermediate results.
+        """
+        import pinocchio as pin
+        if self._least_squares is None:
+            self.prepare_bounded_solver()
+        least_squares = self._least_squares
+        data = self._model.createData()
+        scale = np.r_[np.full(3, self._position_tolerance_m),
+                      np.full(3, self._orientation_tolerance_rad)]
+        best = None
+        best_score = float("inf")
+        seen = set()
+        for seed in seeds:
+            seed = np.clip(np.asarray(seed, dtype=float), self._lower, self._upper)
+            if not np.isfinite(seed).all() or seed.tobytes() in seen:
+                continue
+            seen.add(seed.tobytes())
+            feasible = None
+            feasible_score = float("inf")
+            evaluations = 0
+            started = time.monotonic()
+
+            def residual(q):
+                nonlocal best, best_score, feasible, feasible_score, evaluations
+                if self.cancel_check is not None:
+                    self.cancel_check()
+                evaluations += 1
+                full = self._pad_q_for_model(self._model, q, self._n)
+                pin.forwardKinematics(self._model, data, full)
+                pin.updateFramePlacements(self._model, data)
+                pose = data.oMf[self._end_frame_id]
+                error = np.r_[pose.translation - target.translation,
+                              pin.log3(target.rotation.T @ pose.rotation)]
+                pe, oe = float(np.linalg.norm(error[:3])), float(np.linalg.norm(error[3:]))
+                valid = (np.isfinite(q).all() and np.isfinite(error).all()
+                         and np.all(q >= self._lower) and np.all(q <= self._upper)
+                         and pe <= self._position_tolerance_m
+                         and oe <= self._orientation_tolerance_rad)
+                score = float(np.linalg.norm(error / scale))
+                solution = IkSolution(bool(valid), float(np.linalg.norm(
+                    pin.log6(pose.inverse() * target).vector)), q.copy(), pe, oe)
+                if score < best_score:
+                    best, best_score = solution, score
+                if valid and score < feasible_score:
+                    feasible, feasible_score = solution, score
+                return error / scale
+
+            try:
+                fit = least_squares(residual, seed, bounds=(self._lower, self._upper),
+                                    method="trf", max_nfev=500,
+                                    ftol=1e-12, xtol=1e-12, gtol=1e-12)
+            except Exception as error:
+                if record is not None:
+                    record['attempts'].append(dict(method='bounded_least_squares',
+                        seed=seed.tolist(), elapsed_s=time.monotonic()-started,
+                        termination='interrupted', reason=str(error), evaluations=evaluations))
+                raise
+            chosen = feasible if feasible is not None else best
+            if record is not None:
+                record['attempts'].append(dict(method='bounded_least_squares',
+                    seed=seed.tolist(), elapsed_s=time.monotonic()-started,
+                    iterations=None, evaluations=evaluations, nfev=int(fit.nfev),
+                    termination=str(fit.message), solver_success=bool(fit.success),
+                    accepted=feasible is not None, reason='OK' if feasible is not None else 'FK_TOLERANCE',
+                    error=chosen.error, position_error_m=chosen.position_error_m,
+                    orientation_error_rad=chosen.orientation_error_rad,
+                    joints=chosen.joints.tolist()))
+            if feasible is not None:
+                return feasible
+        if best is None:
+            raise ValueError('NO_FINITE_IK_SEED')
+        return best
 
 
 def _cartesian_waypoint_pose(

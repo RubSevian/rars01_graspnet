@@ -683,6 +683,7 @@ def main() -> int:
         ik_checker = IkChecker(
             arm,
             retry_count=ik_retry_count,
+            bounded_fallback=grasp_cfg.get("ik_bounded_fallback_enabled", False),
             position_tolerance_m=float(cartesian_ik_cfg["ik_position_tolerance_m"]),
             orientation_tolerance_rad=np.deg2rad(
                 float(cartesian_ik_cfg["ik_orientation_tolerance_deg"])

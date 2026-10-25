@@ -83,17 +83,25 @@ def _error(model, data, frame, q, target):
 
 
 def solve_ik(model, data, end_frame_id, target, q_init,
-             params=None, controlled_joints=None, cancel_check=None):
+             params=None, controlled_joints=None, cancel_check=None, iterate_callback=None):
     """Damped local-frame IK with four-step backtracking.
 
     Keep the baseline iteration policy (including refinement after reaching
     tolerance). Stop only at an exact deterministic fixed point; repeating
-    the same rejected step cannot improve the result.
+    the same rejected step cannot improve the result. An optional observer sees
+    the initial and every accepted iterate without changing the solver policy.
     """
     params = params or IKParams()
     n = model.nq if controlled_joints is None else controlled_joints
     q = pad_q_for_model(model, q_init, n)
     norm, error = _error(model, data, end_frame_id, q, target)
+
+    def observe():
+        if iterate_callback is not None:
+            pose = data.oMf[end_frame_id]
+            iterate_callback(q[:n].copy(), norm, pose.translation.copy(), pose.rotation.copy())
+
+    observe()
     if norm < params.tolerance:
         return IKResult(q[:n], True, norm, 0, "initial_converged")
     for iteration in range(params.max_iter):
@@ -109,6 +117,7 @@ def solve_ik(model, data, end_frame_id, target, q_init,
             new_norm, new_error = _error(model, data, end_frame_id, candidate, target)
             if new_norm < norm:
                 q, norm, error = candidate, new_norm, new_error
+                observe()
                 break
         else:
             return IKResult(q[:n], norm < params.tolerance, norm, iteration + 1, "no_improving_step")
