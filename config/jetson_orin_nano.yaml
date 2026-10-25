@@ -218,8 +218,7 @@ go2_mission:
     observation_recovery_timeout_s: 30 # Общий срок восстановления наблюдения, не TTL кадра/feedback; затем BLOCKED.
     camera_admission_candidates: 1 # Штатно один кадр. Эксперимент 3 кандидата не подтвердил выигрыш под полной нагрузкой; TTL/skew не меняются.
     camera_admission_attempts: 3 # До трёх НОВЫХ пачек при истечении TTL; TTL каждого остаётся 600 мс, общий deadline операции сохраняется.
-    # Ограничение refine/HOME, рад/с; scan_pose и объектные траектории используют лимиты приводов.
-    arm_speed_rad_s: 0.10
+    # Все позиционные движения: лимиты приводов; только joint1 поиска ограничен отдельно.
     # Срок актуальности статусов и новых команд mission, с.
     heartbeat_ttl_s: 0.25
     r3_status_ttl_s: 0.50 # Согласовано 2026-10-23: только locomotion_status в Mission; не RL watchdog/LowState.
@@ -240,7 +239,7 @@ go2_mission:
     # Допуск measured q к началу траектории owner, рад.
     start_tolerance_rad: 0.025
     # Допуск конечного достижения суставов owner, рад; не мгновенный tracking guard.
-    joint_reached_tolerance_rad: 0.02
+    joint_reached_tolerance_rad: 0.025
   collision:
     # APPROACH/RETREAT: существующие STL губок при max_grasp_width_m (0.100 м).
     # Это аппроксимация, НЕ гарантия collision-free при фактическом раскрытии.
