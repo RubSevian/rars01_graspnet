@@ -45,6 +45,21 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
     if 'target_roi' in config.get('graspnet', {}):
         from .graspnet_roi import validate_roi
         config['graspnet']['target_roi'] = validate_roi(config['graspnet']['target_roi'])
+    collision = config.get('graspnet', {}).get('cloud_collision')
+    if collision is not None:
+        from .cloud_gripper_collision import validate_options
+        collision = validate_options(collision)
+        if collision.get('model') == 'graspnet_boxes':
+            if collision['opening_width_m'] > config['robot']['rars01']['max_grasp_width_m'] + 1e-9:
+                raise ValueError('Cloud box opening exceeds robot maximum width')
+        if collision.get('model') == 'rars01_convex':
+            for key in ('urdf_path', 'mesh_root'):
+                collision[key] = str((PROJECT_ROOT / collision[key]).resolve())
+            if collision['approach_distance_m'] + 1e-9 < config['grasp_pipeline']['grasp']['pregrasp_offset_m']:
+                raise ValueError('Cloud sweep shorter than pregrasp offset')
+            if abs(collision['opening_width_m'] - config['robot']['rars01']['max_grasp_width_m']) > 1e-9:
+                raise ValueError('Cloud approach opening differs from robot maximum width')
+        config['graspnet']['cloud_collision'] = collision
     config["_config_dir"] = str(config_path.parent)
     return config
 

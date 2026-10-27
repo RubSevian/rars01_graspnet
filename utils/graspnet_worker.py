@@ -66,6 +66,7 @@ def _worker_main(connection: Any, checkpoint: str, num_view: int) -> None:
                 request["voxel_size"], diagnostics=stage_arrays,
                 minimum_grasp_depth_m=request.get("minimum_grasp_depth_m",0.),
                 max_grasp_depth_m=request.get("max_grasp_depth_m"),
+                cloud_collision=request.get("cloud_collision"),
             )
             filter_counts = dict(counts, after_cloud_collision=len(grasps.grasp_group_array))
             diagnostics=request.get("include_diagnostics",True)
@@ -100,6 +101,7 @@ def _worker_main(connection: Any, checkpoint: str, num_view: int) -> None:
                     max_grasp_width_m=request.get('max_grasp_width_m'),
                     max_grasp_depth_m=request.get('max_grasp_depth_m'),
                     minimum_grasp_depth_m=request.get('minimum_grasp_depth_m',0.),
+                    cloud_collision=request.get('cloud_collision'),
                     collision_thresh=request['collision_thresh'],voxel_size=request['voxel_size']),
                 "elapsed_s": time.monotonic() - started,
             }
@@ -166,6 +168,7 @@ class GraspNetWorker:
         mask_source: str = 'unknown',
         target_roi=None,
         minimum_grasp_depth_m: float = 0.0,
+        cloud_collision: Optional[dict] = None,
     ) -> dict[str, Any]:
         if not self._process.is_alive():
             raise RuntimeError("GraspNet worker is not running")
@@ -189,6 +192,7 @@ class GraspNetWorker:
             "max_grasp_width_m": max_grasp_width_m,
             "max_grasp_depth_m": max_grasp_depth_m,
             "minimum_grasp_depth_m": float(minimum_grasp_depth_m),
+            "cloud_collision": cloud_collision,
         })
         message = self._receive(timeout_s, "GraspNet inference")
         if message.get("type") == "error":

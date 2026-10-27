@@ -8,6 +8,7 @@ from typing import Any, Optional
 
 import cv2
 import numpy as np
+from rars01_graspnet.mask_geometry import restore_mask
 
 try:
     from .common_utils import class_name, clip_bbox, detection_count, tensor_to_numpy
@@ -126,10 +127,7 @@ def detection_mask(result: Any, index: int, image_shape: tuple[int, int], bbox_x
             if len(data) > index:
                 mask = tensor_to_numpy(data[index])
                 if mask is not None:
-                    mask = np.asarray(mask, dtype=np.float32)
-                    if mask.shape != (h, w):
-                        mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
-                    mask = (mask > 0.5).astype(np.uint8)
+                    mask = restore_mask(mask, (h, w))
                     return (mask, "segmentation") if with_source else mask
         except Exception:
             pass

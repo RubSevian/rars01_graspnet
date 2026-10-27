@@ -8,7 +8,7 @@ from typing import Any, Optional
 import numpy as np
 from utils import graspnet_utils
 from graspnetAPI import Grasp, GraspGroup
-from rars01_graspnet.real_grasp_ik import IkChecker, IkSolution, _plan_cartesian_segment
+from rars01_graspnet.real_grasp_ik import IkChecker, IkSolution, _plan_cartesian_segment, reverse_approach_retreat
 from rars01_graspnet.grasp_selection import normalized_grasp_costs, joint_limit_cost, motion_cost, best_validated_candidate, candidate_cost_terms
 _PARALLEL_FLIP_X = np.diag([1., -1., -1.])
 
@@ -238,14 +238,26 @@ def _select_executable_grasp(
             ) or ()
             if approach_waypoints:
                 grasp_solution = IkSolution(True, 0.0, approach_waypoints[-1])
-                retreat_waypoints = _plan_cartesian_segment(
-                    ik_checker,
-                    grasp6d,
-                    retreat6d,
-                    grasp_solution.joints,
-                    cartesian_ik_cfg,
-                    "retreat", verbose=verbose,
-                ) or ()
+                retreat_waypoints = reverse_approach_retreat(
+                    ik_checker, pre6d, grasp6d, retreat6d, pre.joints,
+                    approach_waypoints, cartesian_ik_cfg,
+                )
+                if retreat_waypoints is not None:
+                    if candidate_diagnostics is not None:
+                        for item in candidate_diagnostics['orientations']:
+                            if item['candidate'] == candidate_label:
+                                item['retreat_method'] = 'reversed_approach'
+                    report(f"[Cartesian/retreat] {candidate_label}: reversed validated approach")
+                else:
+                    retreat_waypoints = _plan_cartesian_segment(
+                        ik_checker,
+                        grasp6d,
+                        retreat6d,
+                        grasp_solution.joints,
+                        cartesian_ik_cfg,
+                        "retreat", verbose=verbose,
+                    )
+                retreat_waypoints = retreat_waypoints or ()
                 retreat = (
                     IkSolution(True, 0.0, retreat_waypoints[-1])
                     if retreat_waypoints

@@ -249,6 +249,7 @@ def infer_grasps(
     voxel_size: float = DEFAULT_VOXEL_SIZE,
     *, diagnostics: Optional[dict] = None,
     minimum_grasp_depth_m: float = 0.0, max_grasp_depth_m: Optional[float] = None,
+    cloud_collision: Optional[dict] = None,
 ) -> tuple[GraspGroup, dict[str, int]]:
     with torch.no_grad():
         end_points = net(end_points)
@@ -260,11 +261,30 @@ def infer_grasps(
     adjusted, changed = apply_depth_floor(gg.grasp_group_array,minimum_grasp_depth_m,max_grasp_depth_m)
     gg = GraspGroup(adjusted)
     if diagnostics is not None:diagnostics["depth_adjusted_grasps"] = adjusted.copy()
+    width_changed = 0
+    if cloud_collision and cloud_collision.get('model') == 'graspnet_boxes':
+        from rars01_graspnet.cloud_gripper_collision import validate_options
+        from rars01_graspnet.graspnet_box_filter import prepare_candidates
+        cloud_collision = validate_options(cloud_collision)
+        adjusted, width_changed = prepare_candidates(adjusted, cloud_collision)
+        gg = GraspGroup(adjusted)
+        if diagnostics is not None:
+            diagnostics['width_adjusted_grasps'] = adjusted.copy()
     decoded_count = len(gg)
     collision_removed = 0
     if len(gg) > 0 and collision_thresh > 0:
-        detector = ModelFreeCollisionDetector(raw_cloud, voxel_size=voxel_size)
-        collision_mask = detector.detect(gg, approach_dist=0.05, collision_thresh=collision_thresh)
+        if cloud_collision and cloud_collision.get('model') == 'rars01_convex':
+            from rars01_graspnet.cloud_gripper_collision import RarsCloudCollision
+            detector = RarsCloudCollision(raw_cloud, voxel_size, cloud_collision)
+            collision_mask, details = detector.evaluate(gg.grasp_group_array)
+            if diagnostics is not None: diagnostics['cloud_collision_details'] = details
+        else:
+            detector = ModelFreeCollisionDetector(raw_cloud, voxel_size=voxel_size)
+            if cloud_collision and cloud_collision.get('model') == 'graspnet_boxes':
+                from rars01_graspnet.graspnet_box_filter import detect_boxes
+                collision_mask = detect_boxes(detector, GraspGroup, gg.grasp_group_array, cloud_collision, collision_thresh)
+            else:
+                collision_mask = detector.detect(gg, approach_dist=0.05, collision_thresh=collision_thresh)
         collision_removed = int(np.count_nonzero(collision_mask))
         gg = gg[~collision_mask]
 
@@ -272,6 +292,7 @@ def infer_grasps(
         "decoded": decoded_count,
         "pre_collision": decoded_count,
         "depth_adjusted_count": changed,
+        "width_adjusted_count": width_changed,
         "collision_removed": collision_removed,
         "final": len(gg),
     }
@@ -537,6 +558,7 @@ def infer_frame(
     max_grasp_width_m: Optional[float] = None,
     max_grasp_depth_m: Optional[float] = None,
     minimum_grasp_depth_m: float = 0.0,
+    cloud_collision: Optional[dict] = None,
 ) -> GraspNetFrameResult:
     try:
         from .yolo_utils import detect_objects
@@ -570,7 +592,7 @@ def infer_frame(
     tic = time.time()
     end_points, o3d_cloud, raw_cloud = build_end_points(color_bgr, depth_mm, K, num_point, min_depth, max_depth)
     grasps, counts = infer_grasps(net, end_points, raw_cloud, collision_thresh, voxel_size,
-        minimum_grasp_depth_m=minimum_grasp_depth_m,max_grasp_depth_m=max_grasp_depth_m)
+        minimum_grasp_depth_m=minimum_grasp_depth_m,max_grasp_depth_m=max_grasp_depth_m,cloud_collision=cloud_collision)
     pre_bbox_grasps = copy_grasp_group(grasps)
     if selected_target is not None:
         grasps = filter_grasps_by_bbox(

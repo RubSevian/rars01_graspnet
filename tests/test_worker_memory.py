@@ -23,7 +23,7 @@ class Connection:
     def send(self,value):self.sent.append(value)
     def close(self):self.closed=True
 
-def exercise(diagnostics,n=10000,crash=False,minimum=0.):
+def exercise(diagnostics,n=10000,crash=False,minimum=0.,collision=None):
     array=np.arange(n*17,dtype=np.float64).reshape(n,17)
     def points(*args,**kwargs):
         assert kwargs['visualize'] is False
@@ -31,6 +31,7 @@ def exercise(diagnostics,n=10000,crash=False,minimum=0.):
         return {},None,np.zeros((8,3))
     def infer(*args,diagnostics=None,**kwargs):
         assert kwargs["minimum_grasp_depth_m"]==minimum
+        assert kwargs["cloud_collision"]==collision
         if diagnostics is not None:diagnostics['decoded_grasps']=array.copy()
         return Group(array),{'decoded':n}
     fake=types.SimpleNamespace(build_net=lambda *a:object(),build_end_points=points,
@@ -39,13 +40,18 @@ def exercise(diagnostics,n=10000,crash=False,minimum=0.):
         filter_grasps_by_width=lambda g,*a:Group(g.grasp_group_array[::2]),
         filter_grasps_by_depth=lambda g,*a:g)
     package=types.ModuleType('utils');package.graspnet_utils=fake
-    request=dict(type='infer',color_bgr=np.zeros((4,4,3),np.uint8),depth_mm=np.ones((4,4),np.uint16),K=np.eye(3),num_point=10000,min_depth=.1,max_depth=1.,collision_thresh=.01,voxel_size=.01,bbox_xyxy=(0,0,4,4),target_margin_px=0,target_expand_ratio=1.,max_grasp_width_m=.1,max_grasp_depth_m=.1,minimum_grasp_depth_m=minimum,include_diagnostics=diagnostics)
+    request=dict(type='infer',color_bgr=np.zeros((4,4,3),np.uint8),depth_mm=np.ones((4,4),np.uint16),K=np.eye(3),num_point=10000,min_depth=.1,max_depth=1.,collision_thresh=.01,voxel_size=.01,bbox_xyxy=(0,0,4,4),target_margin_px=0,target_expand_ratio=1.,max_grasp_width_m=.1,max_grasp_depth_m=.1,minimum_grasp_depth_m=minimum,include_diagnostics=diagnostics,cloud_collision=collision)
     connection=Connection(request)
     with patch.dict(sys.modules,{'utils':package}):worker._worker_main(connection,'unused',300)
     assert connection.closed
     return connection.sent[-1]
 
 class MemoryTests(unittest.TestCase):
+    def test_geometry_config_crosses_worker_boundary(self):
+        options={'model':'rars01_convex','opening_width_m':.1}
+        result=exercise(True,n=10,collision=options)
+        self.assertEqual(result['filter_parameters']['cloud_collision'],options)
+
     def test_depth_floor_is_forwarded_and_reported(self):
         result=exercise(True,n=10,minimum=.04)
         self.assertEqual(result["filter_parameters"]["minimum_grasp_depth_m"],.04)

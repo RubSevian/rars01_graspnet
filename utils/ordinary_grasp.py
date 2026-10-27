@@ -7,6 +7,7 @@ from typing import Any, Optional
 
 import cv2
 import numpy as np
+from rars01_graspnet.mask_geometry import restore_mask
 
 try:
     from .common_utils import detection_count, tensor_to_numpy
@@ -358,7 +359,7 @@ def _rect_points(
     boxes = getattr(result, "boxes", None)
     if masks is not None and boxes is not None and len(masks.data) == len(boxes):
         mask = masks.data[index].cpu().numpy()
-        mask = cv2.resize(mask, (image_shape[1], image_shape[0]), interpolation=cv2.INTER_NEAREST)
+        mask = restore_mask(mask, image_shape)
         rect = _rect_from_mask((mask > 0.5).astype(np.uint8))
         if rect is not None:
             return rect
@@ -372,7 +373,7 @@ def _depth_mask(result: Any, index: int, image_shape: tuple[int, int], rect_poin
     boxes = getattr(result, "boxes", None)
     if masks is not None and boxes is not None and len(masks.data) == len(boxes):
         mask = masks.data[index].cpu().numpy()
-        mask = cv2.resize(mask, (image_shape[1], image_shape[0]), interpolation=cv2.INTER_NEAREST)
+        mask = restore_mask(mask, image_shape)
         return (mask > 0.5).astype(np.uint8)
 
     polygon = np.round(rect_points).astype(np.int32)

@@ -1,0 +1,12 @@
+# Только офлайн-эксперимент; рабочий профиль его не наследует.
+extends: jetson_orin_nano.yaml
+graspnet:
+  cloud_collision:
+    model: rars01_convex
+    urdf_path: ../rars01_description/urdf/rars01_control.urdf
+    mesh_root: ../rars01_description
+    opening_width_m: 0.100 # Реальное раскрытие подхода; сверяется с max_grasp_width_m.
+    approach_distance_m: 0.080 # Весь прямой предподход 80 мм; не заменяет путь руки до предпозиции.
+    max_collision_points: 0 # Любая наблюдаемая точка в оболочках — отказ. Старый IoU 0.01 не переносится.
+    # Проверяем позу при предсказанной ширине и подход на 100 мм. Оболочки симметризованы
+    # для безопасного выбора обеих flip-ориентаций; выемки STL могут дать ложный отказ.

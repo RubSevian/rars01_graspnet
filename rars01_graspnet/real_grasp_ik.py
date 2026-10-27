@@ -375,6 +375,38 @@ def _cartesian_waypoint_pose(
     return mat4_to_pose6d(T)
 
 
+def reverse_approach_retreat(ik_checker, pre6d, grasp6d, retreat6d,
+                             pre_joints, approach_waypoints, cartesian_cfg):
+    """Reuse a validated IK branch only for the same Cartesian segment.
+
+    Returns None to request ordinary IK if reuse is inapplicable or invalid.
+    Collision and time-parameterized velocity checks remain with the caller.
+    """
+    if not np.allclose(pre6d, retreat6d, rtol=0., atol=1e-9):
+        return None
+    if len(approach_waypoints) != int(cartesian_cfg['waypoint_count']):
+        return None
+    chain = np.vstack([pre_joints, approach_waypoints]).astype(float)
+    lower, upper = ik_checker.joint_limits()
+    if (not np.isfinite(chain).all() or np.any(chain < lower)
+            or np.any(chain > upper)):
+        return None
+    if np.max(np.abs(np.diff(chain, axis=0))) > np.deg2rad(cartesian_cfg['max_joint_step_deg']):
+        return None
+    reverse = chain[-2::-1].copy()
+    # Include the grasp start: the actual execution still has its feedback gate.
+    for index, joints in enumerate(np.vstack([chain[-1], reverse])):
+        if ik_checker.cancel_check is not None:
+            ik_checker.cancel_check()
+        pose = _cartesian_waypoint_pose(grasp6d, retreat6d, index / len(reverse))
+        position, rotation = ik_checker.fk_errors(pose, joints)
+        if (not np.isfinite([position, rotation]).all()
+                or position > cartesian_cfg['ik_position_tolerance_m']
+                or rotation > np.deg2rad(cartesian_cfg['ik_orientation_tolerance_deg'])):
+            return None
+    return tuple(reverse)
+
+
 def _plan_cartesian_segment(
     ik_checker: IkChecker,
     start6d: tuple[float, ...],

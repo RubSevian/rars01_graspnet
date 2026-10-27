@@ -778,6 +778,7 @@ def main() -> int:
                             max_grasp_width_m=max_grasp_width_m,
                             max_grasp_depth_m=max_grasp_depth_m,
                             minimum_grasp_depth_m=graspnet_cfg.get("minimum_grasp_depth_m",0.),
+                            cloud_collision=graspnet_cfg.get("cloud_collision"),
                             timeout_s=float(graspnet_cfg.get("worker_timeout_s", 30.0)),
                         )
                         candidate_grasps = GraspGroup(worker_result["grasps"])

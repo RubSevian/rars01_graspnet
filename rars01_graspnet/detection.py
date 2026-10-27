@@ -6,6 +6,7 @@ from typing import Any
 import cv2
 import numpy as np
 
+from .mask_geometry import restore_mask
 from .contracts import Detection2D, RgbdFrame
 
 
@@ -92,9 +93,7 @@ def _result_mask(result, index: int, shape: tuple[int, int], bbox) -> np.ndarray
     masks = getattr(getattr(result, "masks", None), "data", None)
     if masks is not None and len(masks) > index:
         mask = np.asarray(masks[index].detach().cpu(), dtype=np.float32)
-        if mask.shape != shape:
-            mask = cv2.resize(mask, (shape[1], shape[0]), interpolation=cv2.INTER_NEAREST)
-        return mask > 0.5
+        return restore_mask(mask, shape).astype(bool)
     mask = np.zeros(shape, dtype=bool)
     x1, y1, x2, y2 = bbox
     mask[y1:y2 + 1, x1:x2 + 1] = True
