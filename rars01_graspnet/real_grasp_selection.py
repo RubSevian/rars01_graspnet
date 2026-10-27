@@ -1,6 +1,6 @@
 """Executable candidate selection shared with the real GUI; no SDK ownership.
 
-Extracted without changing ranking, transforms or Cartesian IK checks.
+Soft geometry/accuracy/timing ranking; transforms and hard IK/collision admission remain unchanged.
 """
 from __future__ import annotations
 from dataclasses import dataclass
@@ -89,6 +89,9 @@ def _select_executable_grasp(
     candidate_diagnostics=None,
     verbose=True,
     max_grasp_width_m=0.100,
+    target_shape_camera=None,
+    ranking_robot=None,
+    retreat_speed_scale=1.,
 ) -> Optional[ExecutableGrasp]:
     def report(*args):
         if verbose:print(*args)
@@ -119,7 +122,7 @@ def _select_executable_grasp(
         reject("NO_CANDIDATES")
         return None
     top_scores = np.asarray(ranked.scores[:top_count], dtype=np.float64)
-    grasp_costs = normalized_grasp_costs(top_scores)
+    grasp_costs = normalized_grasp_costs(top_scores, candidate_selection_cfg)
     weight_grasp = float(candidate_selection_cfg["weight_grasp"])
     weight_joint = float(candidate_selection_cfg["weight_joint"])
     weight_motion = float(candidate_selection_cfg["weight_motion"])
@@ -279,14 +282,27 @@ def _select_executable_grasp(
                 current_joints,  # Checked return to the saved scan pose.
             )
         )
+        from rars01_graspnet.grasp_ranking import route_time, route_ik_errors
+        approach_points=approach_waypoints or (grasp_solution.joints,)
+        retreat_points=retreat_waypoints or (retreat.joints,)
+        errors=(route_ik_errors(ik_checker,pre6d,grasp6d,retreat6d,pre.joints,approach_points,retreat_points)
+                if candidate_selection_cfg.get('weight_ik',0)>0 else None)
+        duration=(route_time(current_joints,pre.joints,approach_points,retreat_points,ranking_robot,retreat_speed_scale)
+                  if candidate_selection_cfg.get('weight_time',0)>0 else None)
+        cost_cfg=dict(candidate_selection_cfg,
+            ik_position_scale_m=cartesian_ik_cfg.get('ik_position_tolerance_m',.004),
+            ik_orientation_scale_deg=cartesian_ik_cfg.get('ik_orientation_tolerance_deg',7.5))
         terms = candidate_cost_terms(chain, lower, upper, grasp_cost,
             float(grasp.width), max_grasp_width_m,
-            np.asarray(grasp6d[:3])-np.asarray(pre6d[:3]), candidate_selection_cfg)
+            np.asarray(grasp6d[:3])-np.asarray(pre6d[:3]), cost_cfg,
+            shape=target_shape_camera,closing_axis=grasp.rotation_matrix[:,1],ik_errors=errors,duration_s=duration)
         limit_cost, path_cost, total_cost = terms['joint'], terms['motion'], terms['total']
         if candidate_diagnostics is not None:
             for item in candidate_diagnostics['orientations']:
                 if item['candidate'] == candidate_label:
                     item['cost_terms'] = terms
+                    item['ranking_features']=dict(route_time_s=duration,shape=target_shape_camera,
+                        max_ik_errors=None if errors is None else np.max(errors,axis=0).tolist())
                     item['width_reserve_m'] = max_grasp_width_m-float(grasp.width)
         report(
             f"[Candidate] {candidate_label} raw_score={raw_score:.6f} "

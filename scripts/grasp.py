@@ -909,6 +909,9 @@ def main() -> int:
                     )
                 if central_best is not None:
                     print(f"[G] central-mask approach={central_mask_approach}")
+                from rars01_graspnet.grasp_ranking import target_shape
+                shape = target_shape(snap_depth,K,getattr(selected_target,"mask",None),candidate_selection_cfg,
+                    mask_source=getattr(selected_target,"mask_source","unknown"),min_depth=args.min_depth,max_depth=args.max_depth)
                 selected = _select_executable_grasp(
                     ik_checker,
                     grasp_driver,
@@ -928,6 +931,8 @@ def main() -> int:
                     cartesian_ik_cfg,
                     candidate_selection_cfg,
                     max_grasp_width_m=max_grasp_width_m,
+                    ranking_robot=cfg["robot"],
+                    target_shape_camera=shape,
                 )
                 if selected is None:
                     print(f"[G] No IK-reachable grasp above min_base_z={min_base_z_m:.3f}m ")
