@@ -211,6 +211,7 @@ grasp_pipeline:
 graspnet:
   # Локальная копия проверенного GraspNet checkpoint (сама библиотека его не скачивает).
   checkpoint: "models/checkpoint-rs.tar"
+  minimum_grasp_depth_m: 0.040 # Эксперимент: минимум глубины кандидата ДО cloud collision/привязки/NMS/IK. 0 отключает.
   num_point: 20000 # Точек облака: больше — стабильнее, медленнее.
   collision_thresh: 0.01 # Порог collision фильтра GraspNet.
   min_depth: 0.05 # Ближняя глубина, м.

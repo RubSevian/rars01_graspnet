@@ -248,6 +248,7 @@ def infer_grasps(
     collision_thresh: float,
     voxel_size: float = DEFAULT_VOXEL_SIZE,
     *, diagnostics: Optional[dict] = None,
+    minimum_grasp_depth_m: float = 0.0, max_grasp_depth_m: Optional[float] = None,
 ) -> tuple[GraspGroup, dict[str, int]]:
     with torch.no_grad():
         end_points = net(end_points)
@@ -255,6 +256,10 @@ def infer_grasps(
 
     gg = GraspGroup(grasp_preds[0].detach().cpu().numpy())
     if diagnostics is not None:diagnostics["decoded_grasps"] = gg.grasp_group_array.copy()
+    from rars01_graspnet.grasp_depth import apply_depth_floor
+    adjusted, changed = apply_depth_floor(gg.grasp_group_array,minimum_grasp_depth_m,max_grasp_depth_m)
+    gg = GraspGroup(adjusted)
+    if diagnostics is not None:diagnostics["depth_adjusted_grasps"] = adjusted.copy()
     decoded_count = len(gg)
     collision_removed = 0
     if len(gg) > 0 and collision_thresh > 0:
@@ -266,6 +271,7 @@ def infer_grasps(
     return gg, {
         "decoded": decoded_count,
         "pre_collision": decoded_count,
+        "depth_adjusted_count": changed,
         "collision_removed": collision_removed,
         "final": len(gg),
     }
@@ -530,6 +536,7 @@ def infer_frame(
     target_expand_ratio: float = 1.0,
     max_grasp_width_m: Optional[float] = None,
     max_grasp_depth_m: Optional[float] = None,
+    minimum_grasp_depth_m: float = 0.0,
 ) -> GraspNetFrameResult:
     try:
         from .yolo_utils import detect_objects
@@ -562,7 +569,8 @@ def infer_frame(
 
     tic = time.time()
     end_points, o3d_cloud, raw_cloud = build_end_points(color_bgr, depth_mm, K, num_point, min_depth, max_depth)
-    grasps, counts = infer_grasps(net, end_points, raw_cloud, collision_thresh, voxel_size)
+    grasps, counts = infer_grasps(net, end_points, raw_cloud, collision_thresh, voxel_size,
+        minimum_grasp_depth_m=minimum_grasp_depth_m,max_grasp_depth_m=max_grasp_depth_m)
     pre_bbox_grasps = copy_grasp_group(grasps)
     if selected_target is not None:
         grasps = filter_grasps_by_bbox(
