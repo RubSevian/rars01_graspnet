@@ -122,13 +122,14 @@ robot:
     z: 0.3 # Z base_link, м.
     roll: 0.0 # Roll TCP, рад.
     pitch: 0.7 # Pitch TCP, рад.
-    duration: 3.0 # Длительность перехода, с.
+    duration: 4.5 # Минимальная длительность перехода, с.
   motion:
     # Пауза после контакта: губка успевает плавно перейти к удержанию до подъёма.
     grip_settle_s: 0.0
-    pregrasp_duration_s: 3.0
-    grasp_duration_s: 3.0
-    retreat_duration_s: 3.0
+    minimum_duration_s: 4.5 # Общий минимум позиционного движения руки, включая поиск и HOME; лимиты скорости могут увеличить время.
+    pregrasp_duration_s: 4.5
+    grasp_duration_s: 4.5
+    retreat_duration_s: 4.5
     motion_feedback:
       grasp_position_tolerance_m: 0.005
       grasp_orientation_tolerance_deg: 3.0
