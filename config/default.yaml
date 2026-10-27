@@ -201,6 +201,14 @@ grasp_pipeline:
       shape_max_axis_disagreement_deg: 15.0 # Проверка согласия осей двух подвыборок облака.
       desired_width_reserve_m: 0.010 # Суммарно между двумя губками; экспериментальные 10 мм.
       motion_normalization: 2.0 # L0 в L/(L+L0), без жёсткого потолка. При L=L0 штраф 0.5.
+      # Soft distance to the visible 3D target centre in arm base (not centre of mass).
+      weight_center: 0.05 # Set 0 to disable; adds at most 0.05 to J, no hard rejection.
+      center_voxel_m: 0.003 # Equal voxel weights reduce image pixel-density bias.
+      center_trim_quantile: 0.95 # Remove farthest 5% before averaging visible surface.
+      center_min_depth_fraction: 0.70 # Disable when too little mask depth is valid.
+      center_min_points: 100
+      center_min_radius_m: 0.020 # Normalization radius floor for small targets.
+      center_finger_length_m: 0.080 # Usable jaw length; evaluated point is depth - length/2.
       weight_direction: 0.05 # Мягкое предпочтение захода сверху: штраф 0 сверху, 0.025 сбоку, 0.05 снизу; другие варианты разрешены.
       preferred_approach_base: [0.0, 0.0, -1.0] # Только при весе >0; направление в базе руки, НЕ вертикаль мира.
     # Штраф направления = (1-cos угла)/2; раскрытия = max(0,(запас_желаемый-запас)/запас_желаемый)^2.

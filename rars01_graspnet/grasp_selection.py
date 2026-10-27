@@ -84,10 +84,10 @@ def best_validated_candidate(candidates, path_validator=None, *, cancel_check=No
 
 
 def candidate_cost_terms(chain, lower, upper, grasp_cost, width, max_width, approach, config, *,
-                         shape=None, closing_axis=None, ik_errors=None, duration_s=None):
+                         shape=None, closing_axis=None, ik_errors=None, duration_s=None, center=None):
     """Full-route ranking only; never replaces IK or collision admission."""
     weights = {k: float(config.get('weight_'+k, default)) for k, default in
-               [('grasp', .35), ('motion', .30), ('joint', .25), ('width', .10), ('direction', 0.), ('shape',0.), ('ik',0.), ('time',0.), ('turn',0.)]}
+               [('grasp', .35), ('motion', .30), ('joint', .25), ('width', .10), ('direction', 0.), ('shape',0.), ('ik',0.), ('time',0.), ('turn',0.), ('center',0.)]}
     reserve = float(config.get('desired_width_reserve_m', .010))
     if (not all(np.isfinite(v) and v >= 0 for v in weights.values()) or
             sum(weights.values()) <= 0 or not np.isfinite(reserve) or reserve <= 0 or
@@ -106,7 +106,11 @@ def candidate_cost_terms(chain, lower, upper, grasp_cost, width, max_width, appr
             raise ValueError('invalid candidate approach direction')
         terms['direction'] = float((1.-np.clip(np.dot(preferred,actual)/
             (np.linalg.norm(preferred)*np.linalg.norm(actual)), -1., 1.))/2.)
-    terms.update(shape=0.,ik=0.,time=0.,turn=0.)
+    terms.update(shape=0.,ik=0.,time=0.,turn=0.,center=0.)
+    if weights['center']>0 and center and center.get('active'):
+        value=float(center['cost'])
+        if not np.isfinite(value) or not 0<=value<=1:raise ValueError('invalid center cost')
+        terms['center']=value
     if weights['shape']>0 and shape and shape.get('active'):
         axis=np.asarray(shape['axis_camera'],dtype=float);closing=np.asarray(closing_axis,dtype=float)
         terms['shape']=float(shape['confidence']*(axis@closing/(np.linalg.norm(axis)*np.linalg.norm(closing)))**2)

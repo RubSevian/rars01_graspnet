@@ -92,6 +92,7 @@ def _select_executable_grasp(
     target_shape_camera=None,
     ranking_robot=None,
     retreat_speed_scale=1.,
+    target_center_base=None,
 ) -> Optional[ExecutableGrasp]:
     def report(*args):
         if verbose:print(*args)
@@ -304,16 +305,20 @@ def _select_executable_grasp(
         cost_cfg=dict(candidate_selection_cfg,
             ik_position_scale_m=cartesian_ik_cfg.get('ik_position_tolerance_m',.004),
             ik_orientation_scale_deg=cartesian_ik_cfg.get('ik_orientation_tolerance_deg',7.5))
+        from rars01_graspnet.target_center import center_feature
+        center = center_feature(target_center_base,grasp.translation,grasp.rotation_matrix,float(grasp.depth),T_cam2base,
+            finger_length_m=float(candidate_selection_cfg.get('center_finger_length_m',.08)),
+            offset_base=position_compensation_base_m)
         terms = candidate_cost_terms(chain, lower, upper, grasp_cost,
             float(grasp.width), max_grasp_width_m,
             np.asarray(grasp6d[:3])-np.asarray(pre6d[:3]), cost_cfg,
-            shape=target_shape_camera,closing_axis=grasp.rotation_matrix[:,1],ik_errors=errors,duration_s=duration)
+            shape=target_shape_camera,closing_axis=grasp.rotation_matrix[:,1],ik_errors=errors,duration_s=duration,center=center)
         limit_cost, path_cost, total_cost = terms['joint'], terms['motion'], terms['total']
         if candidate_diagnostics is not None:
             for item in candidate_diagnostics['orientations']:
                 if item['candidate'] == candidate_label:
                     item['cost_terms'] = terms
-                    item['ranking_features']=dict(route_time_s=duration,shape=target_shape_camera,
+                    item['ranking_features']=dict(route_time_s=duration,shape=target_shape_camera,center=center,
                         max_ik_errors=None if errors is None else np.max(errors,axis=0).tolist())
                     item['width_reserve_m'] = max_grasp_width_m-float(grasp.width)
         report(
