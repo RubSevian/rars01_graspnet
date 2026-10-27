@@ -49,7 +49,7 @@ go2_mission:
   physical_enabled: true
   # Класс YOLO, который ищем для захвата.
   object_class: yellow banana
-  object_class_aliases: ["water bottle"] # Дополнительная допустимая цель миссии.
+  object_class_aliases: ["water bottle", "green object"] # Дополнительные допустимые цели миссии.
   compute:
     # Число вычислительных потоков perception/BLAS/OpenCV; наследуется GraspNet worker.
     inference_nice: 5 # Linux nice только вычислительного потока/его GraspNet child; ROS callbacks и FIFO20 не меняются. 0 — прежний приоритет.
@@ -110,7 +110,7 @@ go2_mission:
     kp: 20.0
     kd: 1.0
     close_speed_rad_s: 0.25 # Скорость задания угла закрытия; ограничена лимитом SDK.
-    contact_torque_nm: 2.2 # abs(measured torque): stop closing, then regulate contact.
+    contact_torque_nm: 2.8 # Target abs(measured torque), Nm; contact/hold regulator, not instantaneous torque cap.
     hold_gain_rad_s_per_nm: 0.05 # Bounded position-target correction per fresh sample.
     hold_deadband_nm: 0.1
     max_target_lead_rad: 0.15 # No accumulated position error against a stalled jaw.

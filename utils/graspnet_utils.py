@@ -315,7 +315,15 @@ def filter_grasps_by_bbox(
 def filter_grasps_by_width(grasps: GraspGroup, max_width_m: Optional[float]) -> GraspGroup:
     if max_width_m is None or len(grasps) == 0:
         return grasps
-    return grasps[np.asarray(grasps.widths, dtype=np.float64) <= float(max_width_m)]
+    # GraspNet emits float32: 0.1 becomes 0.10000000149. Admit only one
+    # float32 spacing at the boundary, then clamp to the physical maximum.
+    limit=float(max_width_m)
+    widths=np.asarray(grasps.widths,dtype=np.float64)
+    epsilon=abs(float(np.spacing(np.float32(limit))))
+    selected=grasps[np.isfinite(widths) & (widths>=0.) & (widths<=limit+epsilon)]
+    selected.grasp_group_array=np.asarray(selected.grasp_group_array,dtype=np.float64).copy()
+    selected.widths=np.minimum(np.asarray(selected.widths,dtype=np.float64),limit)
+    return selected
 
 
 def filter_grasps_by_depth(grasps: GraspGroup, max_depth_m: Optional[float]) -> GraspGroup:

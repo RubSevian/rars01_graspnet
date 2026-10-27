@@ -45,6 +45,24 @@ def exercise(diagnostics,n=10000,crash=False):
     return connection.sent[-1]
 
 class MemoryTests(unittest.TestCase):
+    def test_width_roundoff_is_clamped_but_real_oversize_is_rejected(self):
+        source=ast.parse((ROOT/'utils/graspnet_utils.py').read_text())
+        fn=next(n for n in source.body if isinstance(n,ast.FunctionDef) and n.name=='filter_grasps_by_width')
+        class G:
+            def __init__(self,widths):self.grasp_group_array=np.asarray(widths,dtype=np.float32).reshape(-1,1)
+            @property
+            def widths(self):return self.grasp_group_array[:,0]
+            @widths.setter
+            def widths(self,value):self.grasp_group_array[:,0]=value
+            def __len__(self):return len(self.widths)
+            def __getitem__(self,mask):return G(self.widths[mask].copy())
+        scope=dict(np=np,GraspGroup=G,Optional=__import__('typing').Optional)
+        exec(compile(ast.Module(body=[fn],type_ignores=[]),'width_filter','exec'),scope)
+        original=G([.096,float(np.float32(.1)),.100001,np.nan,-.01])
+        result=scope['filter_grasps_by_width'](original,.1)
+        np.testing.assert_array_equal(result.widths,[float(np.float32(.096)),.1])
+        self.assertGreater(original.widths[1],.1)
+
     def test_selected_grasps_and_counts_identical_without_unused_diagnostics(self):
         for n in (0,100,10000):
             full=exercise(True,n);lean=exercise(False,n)
