@@ -110,7 +110,7 @@ go2_mission:
     kp: 20.0
     kd: 1.0
     close_speed_rad_s: 0.25 # Скорость задания угла закрытия; ограничена лимитом SDK.
-    contact_torque_nm: 2.8 # Target abs(measured torque), Nm; contact/hold regulator, not instantaneous torque cap.
+    contact_torque_nm: 3.2 # Target abs(measured torque), Nm; contact/hold regulator, not instantaneous torque cap.
     hold_gain_rad_s_per_nm: 0.05 # Bounded position-target correction per fresh sample.
     hold_deadband_nm: 0.1
     max_target_lead_rad: 0.15 # No accumulated position error against a stalled jaw.
@@ -121,9 +121,9 @@ go2_mission:
   gripper_observation:
     # Включить только информационное наблюдение/запись; не является условием движения.
     enabled: true # informational only; never a motion/HOME gate
-    recording_enabled: false # Временный тест без записи telemetry на диск.
+    recording_enabled: true # Компактный JSONL момента/угла/скорости мотора 7, фоновая запись.
     # Пробный минимум |измеренного момента| мотора7, Нм; не калиброван, не задаёт силу.
-    min_abs_torque_nm: 1.0 # provisional, NOT calibrated; not the 2.5 Nm command
+    min_abs_torque_nm: 1.0 # provisional, NOT calibrated; not the contact torque target
     # Максимальная |скорость губок| для признака удержания, рад/с.
     max_abs_velocity_rad_s: 0.05
     # Непрерывная выдержка признаков перед PRESUMED_HELD, с.
