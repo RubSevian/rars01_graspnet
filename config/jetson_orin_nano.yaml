@@ -48,8 +48,8 @@ go2_mission:
   # Разрешение физической миссии; false оставляет запуск в inspection/read-only.
   physical_enabled: true
   # Класс YOLO, который ищем для захвата.
-  object_class: yellow banana
-  object_class_aliases: ["water bottle", "green object", "tool"] # Дополнительные допустимые цели миссии.
+  object_class: "FPV drone" # Испытание рамы дрона; класс автоматически добавляется в YOLO.
+  object_class_aliases: ["FPV drone frame", "quadcopter", "quadcopter frame", "drone frame"] # Пять допустимых названий цели вместе с object_class.
   compute:
     # Число вычислительных потоков perception/BLAS/OpenCV; наследуется GraspNet worker.
     inference_nice: 5 # Linux nice только вычислительного потока/его GraspNet child; ROS callbacks и FIFO20 не меняются. 0 — прежний приоритет.
@@ -175,7 +175,7 @@ go2_mission:
     # Порог крупного скачка положения сцены, м.
     continuity_translation_m: 0.25 # Временно для теста: 25 см, согласовано оператором.
     # Порог крупного скачка ориентации сцены, рад.
-    continuity_rotation_rad: 0.4363323129985824 # Временно для теста: 25 градусов.
+    continuity_rotation_rad: 0.44 # Около 25.21 градуса; округлено по согласованию с оператором.
   search:
     # Режим соответствующего раздела: stub — без доказательства хвата, stop_and_observe — поиск с остановками.
     mode: stop_and_observe # continuous is reserved; rejected until implemented
@@ -218,9 +218,9 @@ go2_mission:
     # Максимальная корректировка камеры или изменение базы за settle window, м — по разделу.
     max_translation_m: 0.02
     # Допустимое изменение ориентации базы за окно стабилизации, рад.
-    max_rotation_rad: 0.08726646259971647
+    max_rotation_rad: 0.09 # Около 5.16 градуса.
     # Предел абсолютного наклона базы для работы руки, рад.
-    max_tilt_rad: 0.4363323129985824 # Временно для теста: 25 градусов.
+    max_tilt_rad: 0.44 # Около 25.21 градуса; округлено по согласованию с оператором.
     # Предельное ожидание стабильного окна базы, с.
     timeout_s: 15
   execution:
