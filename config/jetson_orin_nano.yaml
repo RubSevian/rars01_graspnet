@@ -11,16 +11,20 @@ detection:
   conf_threshold: 0.25 # Тестовый порог YOLO, согласован оператором 2026-10-23.
 
 yolo:
-  text_encoder_subprocess: true # Подготовить названия классов в отдельном CPU-процессе и освободить его память до прогрева YOLO.
+  worker_timeout_s: 30.0 # Отдельный YOLO-процесс: бюджет одного запроса, как исходный GraspNet worker; не TTL кадра.
+  use_world: false # Дообученный checkpoint имеет фиксированный класс drone; не вызывать set_classes.
+  custom_classes: [] # Сохранённые классы checkpoint используются без текстовой подмены.
+  text_encoder_subprocess: false # Для фиксированных классов текстовый encoder не нужен.
   text_encoder_timeout_s: 120.0 # Максимальное ожидание подготовки классов; при ошибке старт не допускается.
-  model_name: yoloe-26s-seg.pt # Модель сегментации YOLO малого Jetson-профиля.
+  model_name: yoloe-26s-seg_new.pt # Дообученная сегментация, сохранённый класс: drone.
   device: cuda:0 # Выполнять YOLO на GPU Jetson.
 
 graspnet:
   # Только вход сети: границы 3D-маски предмета + окружение по каждой оси камеры.
   # Полное облако сохраняется для коллизий. Это НЕ расстояние подхода руки.
   target_roi:
-    enabled: true # false возвращает выборку всей сцены; без маски сегментации включённый режим выдаёт ошибку.
+    enabled: true # Ограничить область входа ROI. false — область всей сцены; квота target_fraction задаётся отдельно.
+    target_fraction: 0.50 # Доля входных точек из маски: 10 000 из 20 000; остальные — контекст ROI. 0 — прежняя случайная выборка. При нехватке точек фактическая доля записывается в диагностике.
     margin_m: 0.12 # Запас 12 см с каждой стороны границ предмета.
     lower_quantile: 0.01 # Границы по 1–99% точек маски с допустимой глубиной: отсечение выбросов.
     upper_quantile: 0.99
@@ -48,8 +52,8 @@ go2_mission:
   # Разрешение физической миссии; false оставляет запуск в inspection/read-only.
   physical_enabled: true
   # Класс YOLO, который ищем для захвата.
-  object_class: "FPV drone" # Испытание рамы дрона; класс автоматически добавляется в YOLO.
-  object_class_aliases: ["FPV drone frame", "quadcopter", "quadcopter frame", "drone frame"] # Пять допустимых названий цели вместе с object_class.
+  object_class: "drone" # Точное имя класса из дообученного checkpoint.
+  object_class_aliases: [] # В новой модели один класс; прежние пять текстовых вариантов не добавляются.
   compute:
     # Число вычислительных потоков perception/BLAS/OpenCV; наследуется GraspNet worker.
     inference_nice: 5 # Linux nice только вычислительного потока/его GraspNet child; ROS callbacks и FIFO20 не меняются. 0 — прежний приоритет.
@@ -240,10 +244,11 @@ go2_mission:
     observation_retry_delay_s: 0.25 # Пауза перед новой попыткой наблюдения в той же позе; новый request id.
     observation_recovery_timeout_s: 30 # Общий срок восстановления наблюдения, не TTL кадра/feedback; затем BLOCKED.
     camera_admission_candidates: 1 # Штатно один кадр. Эксперимент 3 кандидата не подтвердил выигрыш под полной нагрузкой; TTL/skew не меняются.
-    camera_admission_attempts: 3 # До трёх НОВЫХ пачек при истечении TTL; TTL каждого остаётся 600 мс, общий deadline операции сохраняется.
+    camera_admission_attempts: 3 # До трёх новых пачек; возраст каждого ограничен camera_max_age_s, общий deadline операции сохраняется.
     # Все позиционные движения: лимиты приводов; только joint1 поиска ограничен отдельно.
     # Срок актуальности статусов и новых команд mission, с.
     heartbeat_ttl_s: 0.25
+    detection_result_ttl_s: 0.35 # Только возраст готового ответа detect; не TTL статусов/кадра. Один повтор при просрочке.
     r3_status_ttl_s: 0.50 # Согласовано 2026-10-23: только locomotion_status в Mission; не RL watchdog/LowState.
     nav_status_ttl_s: 0.60 # Только status процесса NAV; не odometry/TF или command lease.
     perception_status_ttl_s: 1.50 # Только status процесса; не camera/scene TTL.

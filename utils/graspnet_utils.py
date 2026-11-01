@@ -217,7 +217,15 @@ def build_end_points(
         if sampling_diagnostics is not None:
             sampling_diagnostics.update(detail)
 
-    if len(pool) >= num_point:
+    fraction = float((target_roi or {}).get('target_fraction', 0.))
+    if fraction > 0:
+        from rars01_graspnet.graspnet_roi import sample_target_balanced
+        if mask_source != 'segmentation' or target_mask is None or np.asarray(target_mask).shape != mask.shape:
+            raise ValueError('TARGET_SAMPLING_REQUIRES_SEGMENTATION')
+        idxs, detail = sample_target_balanced(pool, np.asarray(target_mask, dtype=bool)[mask], num_point, fraction)
+        if sampling_diagnostics is not None:
+            sampling_diagnostics.update(detail)
+    elif len(pool) >= num_point:
         idxs = np.random.choice(pool, num_point, replace=False)
     else:
         idxs = np.concatenate(

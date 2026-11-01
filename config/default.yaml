@@ -138,6 +138,7 @@ robot:
       timeout_margin_s: 5.0
       max_feedback_age_s: 0.10
 yolo:
+  worker_timeout_s: 30.0 # Отдельный YOLO-процесс: бюджет одного запроса, как исходный GraspNet worker; не TTL кадра.
   # Та же модель, которая используется в базовом конфиге оригинального проекта.
   model_name: "yoloe-26l-seg.pt"
   device: "cuda:0"
