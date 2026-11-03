@@ -55,6 +55,8 @@ go2_mission:
   object_class: "drone" # Точное имя класса из дообученного checkpoint.
   object_class_aliases: [] # В новой модели один класс; прежние пять текстовых вариантов не добавляются.
   compute:
+    grasp_generation_count: 3 # Максимум на один принятый RGB-D; повтор только при отсутствии выполнимого захвата.
+    grasp_generation_budget_s: null # Общий таймер отключён; максимум 3 генерации, worker timeout, свежесть и отмена сохраняются.
     # Число вычислительных потоков perception/BLAS/OpenCV; наследуется GraspNet worker.
     inference_nice: 5 # Linux nice только вычислительного потока/его GraspNet child; ROS callbacks и FIFO20 не меняются. 0 — прежний приоритет.
     cpu_threads: 1 # perception/BLAS/OpenCV; inherited by spawned GraspNet worker
@@ -209,15 +211,13 @@ go2_mission:
     # Use authoritative ready_pose Cartesian target, subject to full path checking.
   refinement:
     enabled: true # Уточнение обзора перед новым RGB-D/GraspNet.
-    full_view_enabled: true # Joint1 + ограниченный joint4; вертикальное движение проходит проверку пути.
+    full_view_enabled: true # Joint1/joint4 в лимитах руки; при нехватке обзора — отдаление камеры через ИК.
     frame_margin_fraction: 0.05 # Объект целиком внутри кадра с запасом 5% по каждой стороне.
-    max_pitch_rad: 0.35 # Предел joint4 относительно исходной позы сканирования; не накапливается.
-    max_camera_translation_m: 0.05 # Предел перемещения камеры за уточнение по FK; не команда базе.
     max_yaw_rad: 0.5 # Максимальный доворот за одно уточнение; внутри углов поиска и лимитов руки.
     horizontal_tolerance_rad: 0.02 # Допуск горизонтального угла цели относительно оптической оси.
     # Максимальная корректировка камеры или изменение базы за settle window, м — по разделу.
-    max_translation_m: 0.02 # Legacy: не используется в режиме доворота joint1.
-    gain: 0.2 # Legacy: перенос камеры через IK отключён.
+    max_translation_m: 0.02 # Legacy: не ограничивает новое центрирование/отдаление камеры.
+    gain: 0.2 # Legacy: не используется новым центрированием и отдалением камеры.
     # Число свежих YOLO/RGB-D кадров перед вызовом GraspNet.
     fresh_frames: 4
   settle:
