@@ -56,12 +56,12 @@ go2_mission:
   object_class_aliases: [] # В новой модели один класс; прежние пять текстовых вариантов не добавляются.
   compute:
     rrt_connect:
-      enabled: true # Резерв только к предзахвату после отказа всех прямых кандидатов текущей генерации. false — прежний алгоритм.
+      enabled: true # Резерв к предзахвату и возврату после отказа всех прямых полных планов текущей генерации. false — прежний алгоритм.
       timeout_s: null # Отдельный таймер RRT отключён; отмена, штатные дедлайны и свежесть сцены сохраняются.
-      max_extensions: 50 # Общий предел попыток расширения ОБОИХ деревьев на всех резервных кандидатов одной генерации; столкнувшиеся попытки тоже считаются.
+      max_extensions: 200 # Общий предел попыток расширения ОБОИХ направлений и их деревьев на всех резервных кандидатов одной генерации; столкнувшиеся попытки тоже считаются.
       range_rad: 0.35 # Максимальная евклидова длина ребра в пространстве 6 суставов (рад), не новый предел угла сустава. Пределы суставов — URDF.
-      seed: 42 # Воспроизводимый генератор выборок; следующий резервный кандидат использует seed + его индекс.
-      shortcut_checks: 8 # Максимум дополнительных проверок сокращения найденного пути на кандидата; 0 отключает сокращение. Не входят в 50 расширений.
+      seed: 42 # Воспроизводимый генератор выборок; кандидат i использует seed + 2*i туда и seed + 2*i + 1 обратно.
+      shortcut_checks: 8 # Максимум дополнительных проверок сокращения найденного пути на кандидата; 0 отключает сокращение. Не входят в 200 расширений.
     grasp_generation_count: 3 # Максимум на один принятый RGB-D; повтор только при отсутствии выполнимого захвата.
     grasp_generation_budget_s: null # Общий таймер отключён; максимум 3 генерации, worker timeout, свежесть и отмена сохраняются.
     # Число вычислительных потоков perception/BLAS/OpenCV; наследуется GraspNet worker.
@@ -120,10 +120,10 @@ go2_mission:
     motor_torque_cap_evidence: ''
   gripper_torque_control:
     mode: measured_contact # Sampled SDK feedback regulation, NOT a guaranteed torque cap.
-    kp: 40.0 # Closing/contact hold; 3.5 Nm requires ~0.0875 rad lead, below 0.15 rad limit.
+    kp: 40.0 # Closing/contact hold; 4.25 Nm requires ~0.10625 rad static lead, below 0.15 rad limit.
     kd: 1.0
     close_speed_rad_s: 0.25 # Скорость задания угла закрытия; ограничена лимитом SDK.
-    contact_torque_nm: 3.5 # Target abs(measured torque), Nm; contact/hold regulator, not instantaneous torque cap.
+    contact_torque_nm: 4.25 # Target abs(measured torque), Nm; contact/hold regulator, not instantaneous torque cap.
     hold_gain_rad_s_per_nm: 0.05 # Bounded position-target correction per fresh sample.
     hold_deadband_nm: 0.1
     max_target_lead_rad: 0.15 # No accumulated position error against a stalled jaw.

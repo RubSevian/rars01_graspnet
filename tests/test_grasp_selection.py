@@ -83,7 +83,7 @@ def test_candidate_audit_preserves_selection_and_records_both_orientations(capsy
     scope=dict(np=np,candidate_cost_terms=candidate_cost_terms,normalized_grasp_costs=normalized_grasp_costs,joint_limit_cost=joint_limit_cost,
         motion_cost=motion_cost,best_validated_candidate=best_validated_candidate,
         _rank_grasps=lambda *a,**k:Group(2),_parallel_flip_grasp=copy.deepcopy,
-        graspnet_utils=NS(grasp_to_base_poses=poses),ExecutableGrasp=lambda **kw:NS(**kw),
+        grasp_geometry=NS(grasp_to_base_poses=poses),ExecutableGrasp=lambda **kw:NS(**kw),
         IkSolution=lambda success,error,joints:NS(success=success,error=error,joints=joints))
     exec(compile(ast.Module(body=functions,type_ignores=[]),'production_selector','exec',flags=__future__.annotations.compiler_flag),scope)
     def run(audit,verbose=True):

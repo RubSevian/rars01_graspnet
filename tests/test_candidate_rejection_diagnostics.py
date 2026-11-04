@@ -39,7 +39,7 @@ def test_go2_negative_height_reaches_ik_but_default_filters_still_reject():
     ik=SimpleNamespace(current_joints=lambda:np.zeros(6),joint_limits=lambda:(np.full(6,-3.),np.full(6,3.)),solve=solve)
     for z in (-.105,.1):
         pose=(0.,0.,z,0.,0.,0.)
-        with patch('rars01_graspnet.real_grasp_selection._rank_grasps',return_value=Ranked([candidate])), patch('rars01_graspnet.real_grasp_selection.graspnet_utils.grasp_to_base_poses',return_value=(pose,pose,pose)):
+        with patch('rars01_graspnet.real_grasp_selection._rank_grasps',return_value=Ranked([candidate])), patch('rars01_graspnet.real_grasp_selection.grasp_geometry.grasp_to_base_poses',return_value=(pose,pose,pose)):
             args=(ik,driver,None,np.eye(4),.1,.1,0.,.1,0.,.02,'rars01',False,False,np.zeros(3),16,{},dict(weight_grasp=1.,weight_joint=1.,weight_motion=1.,motion_normalization=1.))
             diagnostics=[]
             assert _select_executable_grasp(*args,rejection_diagnostics=diagnostics) is None

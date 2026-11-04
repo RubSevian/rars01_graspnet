@@ -6,7 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional
 import numpy as np
-from utils import graspnet_utils
+from utils import grasp_geometry
 from graspnetAPI import Grasp, GraspGroup
 from rars01_graspnet.real_grasp_ik import IkChecker, IkSolution, _plan_cartesian_segment, reverse_approach_retreat
 from rars01_graspnet.grasp_selection import normalized_grasp_costs, joint_limit_cost, motion_cost, best_validated_candidate, candidate_cost_terms
@@ -32,7 +32,7 @@ class ExecutableGrasp:
 def _rank_grasps(grasps: GraspGroup, apply_nms: bool = True) -> GraspGroup:
     ranked = GraspGroup(grasps.grasp_group_array.copy())
     if apply_nms and len(ranked) > 1:
-        ranked = graspnet_utils.nms_grasp_group(ranked)
+        ranked = grasp_geometry.nms_grasp_group(ranked)
     ranked.sort_by_score()
     return ranked
 
@@ -147,7 +147,7 @@ def _select_executable_grasp(
         )
         for branch_index, oriented_grasp in enumerate(orientation_candidates):
             T_grasp_tcp = grasp_driver.grasp_tcp_transform(float(oriented_grasp.width))
-            grasp6d, pre6d, retreat6d = graspnet_utils.grasp_to_base_poses(
+            grasp6d, pre6d, retreat6d = grasp_geometry.grasp_to_base_poses(
                 oriented_grasp,
                 T_cam2base,
                 pregrasp_offset_m,
