@@ -30,6 +30,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config")
     parser.add_argument("--allow-missing-checkpoint", action="store_true")
+    parser.add_argument("--cuda-smoke", action="store_true", help="Execute pointnet2, KNN and model decode on synthetic input")
     args = parser.parse_args()
     config_path = Path(args.config).expanduser() if args.config else PROJECT_ROOT / "config" / "default.yaml"
     config = load_config(config_path)
@@ -48,6 +49,36 @@ def main() -> None:
         print(f"Checkpoint: MISSING ({checkpoint})")
     else:
         raise FileNotFoundError(f"Checkpoint is missing: {checkpoint}")
+
+    if args.cuda_smoke:
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA smoke requires an available GPU")
+        if not checkpoint.is_file():
+            raise FileNotFoundError("CUDA model smoke requires the checkpoint")
+        import numpy as np
+        from utils.graspnet_utils import build_net, pred_decode
+        from pointnet2_utils import furthest_point_sample, gather_operation
+        from knn_modules import knn
+        points = torch.tensor([[[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]]], device="cuda")
+        indices = furthest_point_sample(points, 2)
+        gathered = gather_operation(points.transpose(1, 2).contiguous(), indices)
+        if indices.shape != (1, 2) or not bool(torch.isfinite(gathered).all()):
+            raise RuntimeError("Invalid pointnet2 result")
+        nearest = knn(points.transpose(1, 2).contiguous(), points.transpose(1, 2).contiguous(), 1)
+        # Upstream KNN returns one-based reference indices.
+        expected = torch.tensor([[[1, 2, 3]]], device="cuda")
+        if not torch.equal(nearest, expected):
+            raise RuntimeError(f"KNN self-query mismatch: {nearest}")
+        rng = np.random.default_rng(0)
+        cloud = rng.uniform([-.1, -.1, .2], [.1, .1, .4], (1, 20000, 3)).astype(np.float32)
+        net = build_net(checkpoint, int(config["graspnet"].get("num_view", 300)))
+        with torch.no_grad():
+            decoded = pred_decode(net({"point_clouds": torch.from_numpy(cloud).cuda(),
+                                       "cloud_colors": np.zeros((20000, 3))}))
+        torch.cuda.synchronize()
+        if len(decoded) != 1 or not decoded[0].numel() or not bool(torch.isfinite(decoded[0]).all()):
+            raise RuntimeError("Invalid model decode")
+        print("CUDA pointnet2, KNN and model decode: OK", tuple(decoded[0].shape))
 
 
 if __name__ == "__main__":

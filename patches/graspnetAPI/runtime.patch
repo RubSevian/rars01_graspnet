@@ -1,0 +1,152 @@
+diff --git a/graspnetAPI/__init__.py b/graspnetAPI/__init__.py
+index b33e391..d9e27d1 100644
+--- a/graspnetAPI/__init__.py
++++ b/graspnetAPI/__init__.py
+@@ -1,6 +1,13 @@
+-__author__ = 'mhgou'
+-__version__ = '1.2.11'
++"""Runtime-only public API for RARS01 GraspNet inference.
++
++The upstream package imports its full dataset evaluation stack at module import
++time. Robot inference only needs grasp containers, so avoid optional Dex-Net,
++autolab and cvxopt dependencies here.
++"""
++
++__author__ = "mhgou"
++__version__ = "1.2.11"
+ 
+-from .graspnet import GraspNet
+-from .graspnet_eval import GraspNetEval
+ from .grasp import Grasp, GraspGroup, RectGrasp, RectGraspGroup
++
++__all__ = ["Grasp", "GraspGroup", "RectGrasp", "RectGraspGroup"]
+diff --git a/graspnetAPI/grasp.py b/graspnetAPI/grasp.py
+index c385443..882e0e9 100644
+--- a/graspnetAPI/grasp.py
++++ b/graspnetAPI/grasp.py
+@@ -1,7 +1,10 @@
+ __author__ = 'mhgou'
+ 
+ import numpy as np
+-import open3d as o3d
++try:
++    import open3d as o3d
++except ImportError:  # Open3D has no CPython 3.12 aarch64 wheel.
++    o3d = None
+ import copy
+ import cv2
+ 
+diff --git a/graspnetAPI/utils/dexnet/grasping/meshpy/mesh.py b/graspnetAPI/utils/dexnet/grasping/meshpy/mesh.py
+index 2f24c05..87b0371 100644
+--- a/graspnetAPI/utils/dexnet/grasping/meshpy/mesh.py
++++ b/graspnetAPI/utils/dexnet/grasping/meshpy/mesh.py
+@@ -485,7 +485,7 @@ class Mesh3D(object):
+         reffed_v_old_ind = reffed_v_old_ind[0]
+ 
+         # Count number of referenced vertices before each index
+-        reffed_v_new_ind = np.cumsum(reffed_array).astype(np.int) - 1
++        reffed_v_new_ind = np.cumsum(reffed_array).astype(int) - 1
+ 
+         try:
+             self.vertices = self.vertices_[reffed_v_old_ind, :]
+diff --git a/graspnetAPI/utils/dexnet/grasping/meshpy/sdf.py b/graspnetAPI/utils/dexnet/grasping/meshpy/sdf.py
+index 521cdcc..8ce3cff 100644
+--- a/graspnetAPI/utils/dexnet/grasping/meshpy/sdf.py
++++ b/graspnetAPI/utils/dexnet/grasping/meshpy/sdf.py
+@@ -236,7 +236,7 @@ class Sdf3D(Sdf):
+         # resolution is max dist from surface when surf is orthogonal to diagonal grid cells
+         spts, _ = self.surface_points()
+         self.center_ = 0.5 * (np.min(spts, axis=0) + np.max(spts, axis=0))
+-        self.points_buf_ = np.zeros([Sdf3D.num_interpolants, 3], dtype=np.int)
++        self.points_buf_ = np.zeros([Sdf3D.num_interpolants, 3], dtype=int)
+         self.coords_buf_ = np.zeros([3, ])
+         self.pts_ = None
+ 
+@@ -399,7 +399,7 @@ class Sdf3D(Sdf):
+ 
+         # regular indexing if integers
+         if type(coords[0]) is int and type(coords[1]) is int and type(coords[2]) is int:
+-            self.coords_buf_ = self.coords_buf_.astype(np.int)
++            self.coords_buf_ = self.coords_buf_.astype(int)
+             return self.data_[self.coords_buf_[0], self.coords_buf_[1], self.coords_buf_[2]]
+ 
+         # otherwise interpolate
+diff --git a/graspnetAPI/utils/utils.py b/graspnetAPI/utils/utils.py
+index fae9f77..82a5673 100755
+--- a/graspnetAPI/utils/utils.py
++++ b/graspnetAPI/utils/utils.py
+@@ -1,5 +1,8 @@
+ import os
+-import open3d as o3d
++try:
++    import open3d as o3d
++except ImportError:  # Visualization helpers are unavailable without Open3D.
++    o3d = None
+ import numpy as np
+ from PIL import Image
+ from transforms3d.euler import euler2mat
+@@ -804,4 +807,4 @@ def batch_key_point_2_rotation(centers_xyz, open_points_xyz, upper_points_xyz):
+     num = open_points_vector.shape[0]
+     x_axis = np.hstack((np.zeros((num, 1)), np.zeros((num, 1)), np.ones((num, 1)))).astype(np.float32).reshape(-1, 3, 1)
+     rotations = np.dstack((x_axis, unit_open_points_vector.reshape((-1, 3, 1)), unit_upper_points_vector.reshape((-1, 3, 1))))
+-    return rotations
+\ No newline at end of file
++    return rotations
+diff --git a/setup.py b/setup.py
+--- a/setup.py
++++ b/setup.py
+@@ -1,36 +1,22 @@
+-from distutils.core import setup
+-from setuptools import find_packages
+-from setuptools.command.install import install
+-import os
++from setuptools import setup, find_packages
+ 
++# Robot inference imports grasp containers and geometry only. Dataset evaluation
++# and visualization are explicitly opt-in; see patches/graspnetAPI/runtime.patch.
+ setup(
+-    name='graspnetAPI',
+-    version='1.2.11',
+-    description='graspnet API',
+-    author='Hao-Shu Fang, Chenxi Wang, Minghao Gou',
+-    author_email='gouminghao@gmail.com',
+-    url='https://graspnet.net',
++    name="graspnetAPI",
++    version="1.2.11",
++    description="graspnet API (RARS runtime patch)",
++    author="Hao-Shu Fang, Chenxi Wang, Minghao Gou",
++    url="https://graspnet.net",
+     packages=find_packages(),
+-    install_requires=[
+-        'numpy>=1.23.4',
+-        'scipy',
+-        'transforms3d>=0.3.1',
+-        'open3d>=0.8.0.0',
+-        'trimesh',
+-        'tqdm',
+-        'Pillow',
+-        'opencv-python',
+-        'pillow',
+-        'matplotlib',
+-        'pywavefront',
+-        'trimesh',
+-        'scikit-image',
+-        'autolab_core',
+-        'autolab-perception',
+-        'cvxopt',
+-        'dill',
+-        'h5py',
+-        'scikit-learn',
+-        'grasp_nms'
+-    ]
++    install_requires=["numpy>=1.23.4", "transforms3d>=0.3.1", "Pillow", "opencv-python"],
++    extras_require={
++        "visualization": ["open3d>=0.8.0.0"],
++        "nms": ["grasp_nms"],
++        "evaluation": [
++            "scipy", "open3d>=0.8.0.0", "trimesh", "tqdm", "matplotlib",
++            "pywavefront", "scikit-image", "autolab_core", "autolab-perception",
++            "cvxopt", "dill", "h5py", "scikit-learn", "grasp_nms",
++        ],
++    },
+ )

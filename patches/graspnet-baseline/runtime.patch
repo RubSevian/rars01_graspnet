@@ -1,0 +1,29 @@
+diff --git a/utils/collision_detector.py b/utils/collision_detector.py
+index fa3e090..d12a011 100644
+--- a/utils/collision_detector.py
++++ b/utils/collision_detector.py
+@@ -5,7 +5,6 @@ Author: chenxi-wang
+ import os
+ import sys
+ import numpy as np
+-import open3d as o3d
+ 
+ class ModelFreeCollisionDetector():
+     """ Collision detection in scenes without object labels. Current finger width and length are fixed.
+@@ -29,10 +28,12 @@ class ModelFreeCollisionDetector():
+         self.finger_width = 0.01
+         self.finger_length = 0.06
+         self.voxel_size = voxel_size
+-        scene_cloud = o3d.geometry.PointCloud()
+-        scene_cloud.points = o3d.utility.Vector3dVector(scene_points)
+-        scene_cloud = scene_cloud.voxel_down_sample(voxel_size)
+-        self.scene_points = np.array(scene_cloud.points)
++        # Open3D has no Linux ARM64 CPython 3.12 wheel.  Only voxel
++        # downsampling is needed here, so retain one source point per voxel.
++        points = np.asarray(scene_points, dtype=np.float32)
++        voxel_indices = np.floor(points / float(voxel_size)).astype(np.int64)
++        _, first_indices = np.unique(voxel_indices, axis=0, return_index=True)
++        self.scene_points = points[np.sort(first_indices)]
+ 
+     def detect(self, grasp_group, approach_dist=0.03, collision_thresh=0.05, return_empty_grasp=False, empty_thresh=0.01, return_ious=False):
+         """ Detect collision of grasps.

@@ -1232,7 +1232,6 @@ robot = [
 ]
 vision = [
     { name = "ninja" },
-    { name = "open3d" },
     { name = "scipy" },
     { name = "torch" },
     { name = "torchvision" },
@@ -1240,12 +1239,15 @@ vision = [
     { name = "trimesh" },
     { name = "ultralytics" },
 ]
+visualization = [
+    { name = "open3d" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "ninja", marker = "extra == 'vision'", specifier = ">=1.11" },
     { name = "numpy", specifier = ">=2.3,<2.4" },
-    { name = "open3d", marker = "extra == 'vision'", specifier = ">=0.18" },
+    { name = "open3d", marker = "extra == 'visualization'", specifier = ">=0.18" },
     { name = "opencv-python", specifier = "==5.0.0.93" },
     { name = "pybind11", marker = "extra == 'robot'", specifier = ">=2.11" },
     { name = "pyorbbecsdk2", marker = "extra == 'camera'", specifier = ">=2.0" },
@@ -1259,7 +1261,7 @@ requires-dist = [
     { name = "trimesh", marker = "extra == 'vision'", specifier = ">=4" },
     { name = "ultralytics", marker = "extra == 'vision'", specifier = ">=8.4,<8.5" },
 ]
-provides-extras = ["camera", "robot", "vision", "dev"]
+provides-extras = ["camera", "robot", "vision", "visualization", "dev"]
 
 [[package]]
 name = "referencing"

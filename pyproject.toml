@@ -23,12 +23,12 @@ vision = [
   "torch>=2.13,<2.14",
   "torchvision>=0.28,<0.29",
   "ultralytics>=8.4,<8.5",
-  "open3d>=0.18",
   "scipy>=1.15,<1.19",
   "transforms3d>=0.4",
   "trimesh>=4",
   "ninja>=1.11",
 ]
+visualization = ["open3d>=0.18"]
 dev = ["pytest>=8", "ruff>=0.9"]
 
 [build-system]
