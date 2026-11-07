@@ -78,7 +78,10 @@ bash tools/environment/prepare_perception.sh --destination /tmp/go2-perception-s
 resolver использует PyPI и официальный CUDA 13.2 index PyTorch. Для полной
 установки нужен доступ к сети и инструменты сборки, в том числе для evdev.
 Подготовленный staged venv и baseline выбираются через deployment.local.yaml
-только после регрессии. Полная новая нативная сборка пока отложена оператором.
+только после регрессии. Чистый venv, новая сборка расширений и архивная регрессия проверены:
+[протокол 08.11](../../docs/installation/PERCEPTION_CLEAN_VALIDATION_20261108.md).
+Старый рабочий venv не переключён. Для cuSPARSELt 0.8.1 установщик применяет
+защищённое исправление известного дефекта wheel metadata; ELF остаётся неизменённым.
 
 Текущий фиксированный класс drone не использует текстовый encoder: CLIP и
 mobileclip2_b.ts не входят в этот профиль. Open3D нужен только отдельной

@@ -51,7 +51,7 @@ echo "Building GraspNet CUDA extensions for $MACHINE_ARCH (SM $TORCH_CUDA_ARCH_L
 cd "$PROJECT_DIR"
 "$PYTHON_BIN" scripts/check_compute.py --require-cuda
 "$PYTHON_BIN" "$WORKSPACE/tools/environment/prepare_grasp_sources.py" --destination "$GRASPNET_DIR" --verify
-uv pip install --python "$PYTHON_BIN" --reinstall "$API_DIR" --no-deps
+uv pip install --python "$PYTHON_BIN" --reinstall "$API_DIR" --no-deps --no-build-isolation
 uv pip install --python "$PYTHON_BIN" --reinstall "$GRASPNET_DIR/pointnet2" --no-build-isolation --no-deps
 uv pip install --python "$PYTHON_BIN" --reinstall "$GRASPNET_DIR/knn" --no-build-isolation --no-deps
 
