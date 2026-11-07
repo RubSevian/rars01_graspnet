@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import importlib
 import sys
 from pathlib import Path
@@ -13,7 +14,7 @@ from rars01_graspnet.config import load_config
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-GRASPNET_ROOT = PROJECT_ROOT / "sdk" / "graspnet-baseline"
+GRASPNET_ROOT = Path(os.environ.get("GRASPNET_ROOT", str(PROJECT_ROOT / "sdk" / "graspnet-baseline"))).expanduser().absolute()
 
 
 def prepare_graspnet_imports() -> None:

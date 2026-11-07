@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-GRASPNET_DIR="$PROJECT_DIR/sdk/graspnet-baseline"
+GRASPNET_DIR="${GRASPNET_ROOT:-$PROJECT_DIR/sdk/graspnet-baseline}"
 API_DIR="$GRASPNET_DIR/graspnetAPI"
 WORKSPACE="$(cd -- "$PROJECT_DIR/../.." && pwd)"
 export MAX_JOBS="${MAX_JOBS:-1}"
@@ -49,10 +49,10 @@ export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-$DEFAULT_TORCH_ARCH}"
 echo "Building GraspNet CUDA extensions for $MACHINE_ARCH (SM $TORCH_CUDA_ARCH_LIST)"
 
 cd "$PROJECT_DIR"
-"$PYTHON_BIN" scripts/check_compute.py
+"$PYTHON_BIN" scripts/check_compute.py --require-cuda
 "$PYTHON_BIN" "$WORKSPACE/tools/environment/prepare_grasp_sources.py" --destination "$GRASPNET_DIR" --verify
 uv pip install --python "$PYTHON_BIN" --reinstall "$API_DIR" --no-deps
 uv pip install --python "$PYTHON_BIN" --reinstall "$GRASPNET_DIR/pointnet2" --no-build-isolation --no-deps
 uv pip install --python "$PYTHON_BIN" --reinstall "$GRASPNET_DIR/knn" --no-build-isolation --no-deps
 
-"$PYTHON_BIN" scripts/check_graspnet.py --allow-missing-checkpoint
+"$PYTHON_BIN" scripts/check_graspnet.py --config "$PROJECT_DIR/config/jetson_orin_nano.yaml" --cuda-smoke

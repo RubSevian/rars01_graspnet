@@ -60,65 +60,30 @@ swapon --show
 Если файл `/swapfile` уже существует, не выполняйте команды создания повторно;
 проверьте его через `swapon --show`.
 
-## 2. Python и CUDA PyTorch
+## 2–3. Окружение восприятия
+
+Канонический рецепт комплекса: [INSTALL.md](../../docs/installation/INSTALL.md),
+локальные пути: [DEPLOYMENT.md](../../docs/installation/DEPLOYMENT.md).
+Из корня sim2real:
 
 ```bash
-cd /home/ruben/go2_diploma/sim2real/repos/rars01_graspnet
-uv venv --python 3.12
-
-export UV_CACHE_DIR=/tmp/rars01-uv-cache
-export UV_HTTP_TIMEOUT=300
-export UV_HTTP_RETRIES=10
-export UV_CONCURRENT_DOWNLOADS=1
-
-uv pip install --python .venv/bin/python \
-  'torch==2.13.0+cu132' 'torchvision==0.28.0+cu132' \
-  --index-url https://download.pytorch.org/whl/cu132
-
-uv pip install --python .venv/bin/python -e .
+# Только разрешение пакетов в пустом временном venv, без установки:
+bash tools/environment/prepare_perception.sh --destination /tmp/go2-perception-staging
+# Реальная установка и CUDA-сборка — отдельный явно выбранный шаг:
+# bash tools/environment/prepare_perception.sh --destination /tmp/go2-perception-staging --install
 ```
 
-Проверка GPU:
+Назначение должно отсутствовать. Рабочий venv не обновляется и не копируется.
+Версии и SHA-256 фиксирует `requirements/perception-jetson.lock.txt`; пакетный
+resolver использует PyPI и официальный CUDA 13.2 index PyTorch. Для полной
+установки нужен доступ к сети и инструменты сборки, в том числе для evdev.
+Подготовленный staged venv и baseline выбираются через deployment.local.yaml
+только после регрессии. Полная новая нативная сборка пока отложена оператором.
 
-```bash
-.venv/bin/python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available(), torch.cuda.get_device_capability(0))"
-```
-
-Ожидается `True` и `(8, 7)`. Upstream wheel может выдать предупреждение про
-SM 8.7; базовые CUDA tensor и `Conv2d` на этом Jetson проверены.
-
-## 3. Остальные Python-пакеты
-
-```bash
-uv pip install --python .venv/bin/python --no-deps \
-  'scipy==1.18.0' transforms3d trimesh ninja pybind11 pytest \
-  matplotlib pillow psutil py-cpuinfo pandas requests tqdm ultralytics-thop \
-  contourpy cycler fonttools kiwisolver packaging pyparsing python-dateutil \
-  pytz tzdata charset-normalizer idna urllib3 certifi
-uv pip install --python .venv/bin/python --no-deps 'ultralytics>=8.4,<8.5'
-```
-
-YOLOE использует текстовый encoder CLIP для классов из `yolo.custom_classes`.
-Установите официальный вариант Ultralytics (один раз):
-
-```bash
-git clone --depth 1 https://github.com/ultralytics/CLIP.git sdk/ultralytics-clip
-uv pip install --python .venv/bin/python --no-deps ./sdk/ultralytics-clip
-```
-
-Для `yoloe-26s-seg.pt` также нужен вес `mobileclip2_b.ts` (242 МБ). Старая
-версия Ultralytics не умеет скачать его автоматически, поэтому загрузите его
-в корень проекта до первого запуска:
-
-```bash
-curl -L --fail --continue-at - -o mobileclip2_b.ts \
-  https://github.com/ultralytics/assets/releases/download/v8.4.0/mobileclip2_b.ts
-```
-
-`open3d` не устанавливайте: для Linux ARM64 + Python 3.12 нет готового колеса.
-Скрипт установки GraspNet отключает его обязательный импорт; инференс и
-`--no-open3d` работают без него. Open3D-визуализация GraspNet на Jetson
-недоступна.
+Текущий фиксированный класс drone не использует текстовый encoder: CLIP и
+mobileclip2_b.ts не входят в этот профиль. Open3D нужен только отдельной
+визуализации/evaluation. Перенесённый старый venv сохраняет прежнюю metadata;
+не выполнять поверх него `uv sync` или этот установщик.
 
 ## 4. Orbbec Gemini 336
 
@@ -126,8 +91,7 @@ curl -L --fail --continue-at - -o mobileclip2_b.ts \
    обновить закреплённый NumPy:
 
 ```bash
-uv pip install --python .venv/bin/python --no-deps --upgrade pyorbbecsdk2
-uv pip install --python .venv/bin/python --no-deps --reinstall 'numpy==2.3.5'
+# pyorbbecsdk2==2.1.1 и numpy==2.3.5 уже входят в нативный lock.
 ```
 
 2. Установите udev rules официальным скриптом OrbbecSDK:
@@ -150,13 +114,7 @@ sudo udevadm control --reload && sudo udevadm trigger
 
 ## 5. Pinocchio и RARS SDK
 
-Контроллер и математика входят в проект. Установите нативные зависимости:
-
-```bash
-uv pip install --python .venv/bin/python \
-  'numpy==2.3.5' 'scipy==1.18.0' 'pin==3.9.0' \
-  'cmeel-urdfdom==4.0.1' 'cmeel-tinyxml2==10.0.0'
-```
+Pinocchio/NumPy и их зависимости устанавливаются по нативному lock выше.
 
 Перед любым запуском, который использует робота, добавьте библиотеки Pinocchio
 в путь динамического загрузчика (выполняется в каждом новом терминале):
@@ -208,13 +166,16 @@ sudo .venv/bin/python scripts/reset_stm32_usb.py --execute
 
 ## 6. GraspNet CUDA-операторы
 
-Исходники уже должны быть в `sdk/graspnet-baseline/` и
-`sdk/graspnet-baseline/graspnetAPI/`. Если их нет:
+Baseline и API готовятся вместе из закреплённых коммитов и полного набора
+патчей. Из корня sim2real, в отсутствующий каталог:
 
 ```bash
-git clone --depth 1 https://github.com/graspnet/graspnet-baseline.git sdk/graspnet-baseline
-git clone --depth 1 https://github.com/graspnet/graspnetAPI.git sdk/graspnet-baseline/graspnetAPI
+python3 tools/environment/prepare_grasp_sources.py --destination NEW_BASELINE
+python3 tools/environment/prepare_grasp_sources.py --destination NEW_BASELINE --verify
 ```
+
+При использовании prepare_perception.sh подготовка и сборка уже включены.
+Не клонировать произвольный upstream HEAD вручную.
 
 Собирайте строго с одним job, чтобы не перегрузить Jetson и VS Code:
 

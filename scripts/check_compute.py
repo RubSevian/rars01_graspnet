@@ -2,6 +2,7 @@
 """Report the PyTorch device which YOLO/GraspNet will use."""
 from __future__ import annotations
 
+import argparse
 import os
 import re
 import shutil
@@ -9,6 +10,9 @@ import subprocess
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--require-cuda", action="store_true")
+    args = parser.parse_args()
     try:
         import torch
     except ImportError:
@@ -22,6 +26,8 @@ def main() -> None:
         print("Selected GPU:", torch.cuda.get_device_name(0))
         print("Pipeline device: cuda:0")
     else:
+        if args.require_cuda:
+            raise SystemExit("CUDA GPU unavailable; refusing a CPU-only native build")
         print("Pipeline device: cpu")
         print("YOLO can run, but live YOLO + GraspNet will be substantially slower.")
 
