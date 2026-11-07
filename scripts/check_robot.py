@@ -46,7 +46,7 @@ def main() -> None:
             T = fk.forward(q)
             status = robot.arm.communication_status()
             print("\nq [rad]:", np.round(q, 5))
-            print("valid:  ", state.valid.astype(int), "error:", state.error)
+            print("valid:  ", state.valid.astype(int), "motor status:", state.error)
             print("limits: ", inside.astype(int))
             print("TCP xyz [m]:", np.round(T[:3, 3], 5))
             print("temperature MOS/rotor:", np.round(state.mos_temperature, 1),
@@ -56,8 +56,14 @@ def main() -> None:
             if not np.all(inside):
                 bad = [fk.joint_names[i] for i in np.flatnonzero(~inside)]
                 print("WARNING: joints outside URDF limits:", bad)
-            if np.any(state.error):
-                print("WARNING: motor fault/status is non-zero")
+            # SDK keeps the historical field name `error`: DAMIAO status
+            # 0=disabled, 1=enabled/normal, 8..14=fault.
+            fault = (state.error >= 8) & (state.error <= 14)
+            unknown = ~np.isin(state.error, [0, 1, *range(8, 15)])
+            if np.any(fault):
+                print("WARNING: motor fault:", state.error[fault])
+            if np.any(unknown):
+                print("WARNING: unknown motor status:", state.error[unknown])
             if args.once:
                 break
             time.sleep(max(0.01, 1.0 / args.rate))
