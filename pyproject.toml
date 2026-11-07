@@ -2,15 +2,15 @@
 name = "rars01-graspnet"
 version = "0.1.0"
 description = "Eye-in-hand RGB-D grasping pipeline for RARS01"
-# Desktop development uses CPython 3.10; JetPack 7.2 / Ubuntu 24.04 ships
-# CPython 3.12. Native packages (PyTorch, Pinocchio and Orbbec) are installed
+# NumPy 2.3 requires Python >=3.11; Jetson uses CPython 3.12.
+# Native packages (PyTorch, Pinocchio and Orbbec) are installed
 # separately on Jetson because their wheels are platform and CUDA specific.
-requires-python = ">=3.10,<3.13"
+requires-python = ">=3.11,<3.13"
 dependencies = [
   # Pinocchio 3.9 requires the NumPy 2.3 ABI.
   "numpy>=2.3,<2.4",
   "PyYAML>=6",
-  "opencv-contrib-python>=4.8,<5",
+  "opencv-python==5.0.0.93",
 ]
 
 [project.optional-dependencies]

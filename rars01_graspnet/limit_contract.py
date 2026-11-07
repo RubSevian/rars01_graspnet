@@ -22,8 +22,6 @@ def _sdk_configuration(config):
     if override:
         candidates.append(Path(override).expanduser())
     candidates.append(resolve_path(config, hardware["sdk_python_path"]))
-    # Existing standalone grasp checkout on the development machine.
-    candidates.append(Path.home() / "RARS_sdk_grasp_net/rars_arm_sdk/build-python")
     for path in candidates:
         if path.is_dir() and any(path.glob("rars_arm_py*.so")):
             sys.path.insert(0, str(path))

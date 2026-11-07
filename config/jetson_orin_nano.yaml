@@ -99,9 +99,9 @@ go2_mission:
     # Существующая eye-in-hand калибровка камеры.
     hand_eye: repos/rars01_graspnet/config/calibration/orbbec_gemini2/hand_eye.npz
     # Локальный checkout GraspNet baseline с CUDA extensions.
-    graspnet_root: /home/ruben/RARS_sdk_grasp_net/rars01_graspnet/sdk/graspnet-baseline
+    graspnet_root: repos/rars01_graspnet/sdk/graspnet-baseline
     # Python venv с GraspNet/YOLO/геометрическими зависимостями.
-    python: /home/ruben/RARS_sdk_grasp_net/rars01_graspnet/.venv/bin/python
+    python: repos/rars01_graspnet/.venv/bin/python
   owner:
     # Единственный serial-порт руки.
     device_path: /dev/serial/by-id/usb-STMicroelectronics_STM32_Virtual_ComPort_3172366B3233-if00

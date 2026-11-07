@@ -4,13 +4,13 @@
 порядку. Не запускайте реальное движение робота до этапа 7.
 
 Профиль запуска: `config/jetson_orin_nano.yaml`. Он использует
-`yoloe-26s-seg.pt`, 10 000 точек GraspNet, `top_k: 20` и оставляет управление
+`yoloe-26s-seg_new.pt`, 20 000 точек GraspNet, `top_k: 20` и оставляет управление
 роботом на 100 Hz.
 
 ## 0. Что должно быть рядом
 
 ```text
-RARS_sdk_grasp_net/
+sim2real/repos/
 ├── rars01_graspnet/
 ├── rars_arm_sdk/
 └── rars01_description/
@@ -25,7 +25,7 @@ RARS_sdk_grasp_net/
 Проверка весов:
 
 ```bash
-cd /home/ruben/RARS_sdk_grasp_net/rars01_graspnet/models
+cd /home/ruben/go2_diploma/sim2real/repos/rars01_graspnet/models
 sha256sum -c SHA256SUMS
 ```
 
@@ -63,7 +63,7 @@ swapon --show
 ## 2. Python и CUDA PyTorch
 
 ```bash
-cd /home/ruben/RARS_sdk_grasp_net/rars01_graspnet
+cd /home/ruben/go2_diploma/sim2real/repos/rars01_graspnet
 uv venv --python 3.12
 
 export UV_CACHE_DIR=/tmp/rars01-uv-cache

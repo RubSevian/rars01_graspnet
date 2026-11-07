@@ -28,28 +28,23 @@ def test_jetson_config_inherits_robot_and_overrides_memory_profile():
     assert cartesian_ik["joint_step_warn_deg"] == 10.0
     assert cartesian_ik["max_joint_step_deg"] == 15.0
     assert cartesian_ik["ik_position_tolerance_m"] == 0.004
-    assert cartesian_ik["ik_orientation_tolerance_deg"] == 2.0
+    # Default updated in 5e4e231 (2026-10-25); Jetson inherits it.
+    assert cartesian_ik["ik_orientation_tolerance_deg"] == 7.5
     assert config["robot"]["motion"]["motion_feedback"] == {
         "grasp_position_tolerance_m": 0.005,
         "grasp_orientation_tolerance_deg": 3.0,
         "velocity_tolerance_deg_s": 2.0,
         "settle_time_s": 0.2,
-        "timeout_margin_s": 5.5,
+        "timeout_margin_s": 5.0,
         "max_feedback_age_s": 0.10,
     }
     selection = config["grasp_pipeline"]["grasp"]["candidate_selection"]
-    assert selection == {
-        "weight_grasp": 0.35,
-        "weight_joint": 0.25,
-        "weight_motion": 0.30,
-        "motion_normalization": 2.0,
-        "weight_width": 0.10,
-        "desired_width_reserve_m": 0.010,
-        "weight_direction": 0.0,
-        "preferred_approach_base": [0.0, 0.0, -1.0],
-    }
-    assert config["yolo"]["model_name"] == "yoloe-26s-seg.pt"
-    assert config["graspnet"]["num_point"] == 10000
+    # Ranking evolved in fd04a0b; this test verifies Jetson inheritance.
+    default = load_config(root / "config" / "default.yaml")
+    assert selection == default["grasp_pipeline"]["grasp"]["candidate_selection"]
+    # Fine-tuned target model selected in 5474542.
+    assert config["yolo"]["model_name"] == "yoloe-26s-seg_new.pt"
+    assert config["graspnet"]["num_point"] == 20000
     assert config["graspnet"]["top_k"] == 20
 
 
