@@ -259,6 +259,7 @@ go2_mission:
     # Все позиционные движения: лимиты приводов; только joint1 поиска ограничен отдельно.
     # Срок актуальности статусов и новых команд mission, с.
     heartbeat_ttl_s: 0.25
+    mission_health_ttl_s: 0.5 # Jetson Mission lease only; not STM32 watchdog
     detection_result_ttl_s: 0.35 # Только возраст готового ответа detect; не TTL статусов/кадра. Один повтор при просрочке.
     r3_status_ttl_s: 0.50 # Согласовано 2026-10-23: только locomotion_status в Mission; не RL watchdog/LowState.
     nav_status_ttl_s: 0.60 # Только status процесса NAV; не odometry/TF или command lease.
